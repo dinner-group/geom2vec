@@ -156,6 +156,40 @@ class Preprocessing:
 
         Returns
         -------
+        dataset : list
+            List of tuples: the length of the list represents the number of data.
+            Each tuple has two elements: one is the instantaneous data frame, the other is the corresponding time-lagged data frame.
+
+        """
+
+        data = self._seq_trajs(data)
+
+        num_trajs = len(data)
+        dataset = []
+        for k in range(num_trajs):
+            L_all = data[k].shape[0]
+            L_re = L_all - lag_time
+            for i in range(L_re):
+                dataset.append((data[k][i, :], data[k][i + lag_time, :]))
+
+        return dataset
+
+    def create_time_lagged_dataset_train(self, data, lag_time):
+        """
+        Create a time-lagged dataset.
+
+        This dataset is used for VAMPnet/SRV training/validation.
+
+        Parameters
+        ----------
+        data : list or ndarray or torch.Tensor
+            The original trajectories.
+
+        lag_time : int
+            The lag_time used to create the dataset consisting of time-instant and time-lagged data.
+
+        Returns
+        -------
         dataset : TimeLaggedDataset class object
 
         """
