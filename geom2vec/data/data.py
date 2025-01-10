@@ -1,14 +1,10 @@
 import os
-
-import numpy as np
 import torch
+import numpy as np
 import torch.nn.functional as F
 from tqdm import tqdm
-from copy import copy
 from torch.utils.data import Dataset
-import MDAnalysis as mda
-import mdtraj as md
-
+import bisect
 
 class Preprocessing:
     """
@@ -51,15 +47,15 @@ class Preprocessing:
             The processed data as a list of tensors.
         """
 
-        data = copy(data)
         if not isinstance(data, list):
             data = [data]
 
         for i in range(len(data)):
-            if not isinstance(data[i], torch.Tensor):
-                data[i] = torch.tensor(data[i], dtype=self._dtype)
+            if isinstance(data[i], torch.Tensor):
+                if data[i].dtype != self._dtype:
+                    data[i] = data[i].to(self._dtype)
             else:
-                data[i] = data[i].clone().detach().type(self._dtype)
+                data[i] = torch.as_tensor(data[i], dtype=self._dtype)
 
         return data
 
@@ -160,21 +156,12 @@ class Preprocessing:
 
         Returns
         -------
-        dataset : list
-            List of tuples: the length of the list represents the number of data.
-            Each tuple has two elements: one is the instantaneous data frame, the other is the corresponding time-lagged data frame.
+        dataset : TimeLaggedDataset class object
 
         """
 
         data = self._seq_trajs(data)
-
-        num_trajs = len(data)
-        dataset = []
-        for k in range(num_trajs):
-            L_all = data[k].shape[0]
-            L_re = L_all - lag_time
-            for i in range(L_re):
-                dataset.append((data[k][i, :], data[k][i + lag_time, :]))
+        dataset = TimeLaggedDataset(data, lag_time)
 
         return dataset
 
@@ -585,8 +572,45 @@ class Preprocessing:
 
         return data
 
+class TimeLaggedDataset(Dataset):
+    def __init__(self, trajectories, lag_time):
+        """
+        trajectories : list of T tensors (each is a memory-mapped Torch tensor)
+        lag_time     : int
+        """
+        super().__init__()
+        self.trajs = trajectories
+        self.lag_time = lag_time
 
-class SPIBDataset(torch.utils.data.Dataset):
+        # Precompute lengths & cumulative lengths
+        self.lengths = [t.shape[0] - lag_time for t in self.trajs]
+        # For quick indexing across multiple trajectories
+        self.cum_lengths = []
+        total = 0
+        for length in self.lengths:
+            total += length
+            self.cum_lengths.append(total)
+
+    def __len__(self):
+        return self.cum_lengths[-1]
+
+    def __getitem__(self, idx):
+        """
+        Return ( x(t), x(t+lag) ) for the correct trajectory and time step.
+        """
+
+        traj_idx = bisect.bisect_right(self.cum_lengths, idx)
+        # The base offset inside that trajectory
+        if traj_idx == 0:
+            offset = idx
+        else:
+            offset = idx - self.cum_lengths[traj_idx - 1]
+
+        x_t = self.trajs[traj_idx][offset]
+        x_t_lag = self.trajs[traj_idx][offset + self.lag_time]
+        return x_t, x_t_lag
+
+class SPIBDataset(Dataset):
     """
     High-level container for time-lagged time-series data
 
