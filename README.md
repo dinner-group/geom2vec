@@ -1,13 +1,6 @@
 # geom2vec
 
-<img 
-    style="display: block; 
-           margin-left: auto;
-           margin-right: auto;
-           width: 50%;"
-    src="resources/scheme.jpg" 
-    alt="Scheme">
-</img>
+![Scheme](resources/scheme.jpg)
 
 geom2vec (geometry-to-vector) is a framework for compute vector representation of molecular conformations using
 pretrained graph neural networks (GNNs).
@@ -22,11 +15,13 @@ geom2vec offers several attractive features and use cases:
 
 - [Installation](#installation)
 - [Repository structure](#repository-structure)
+- [New Features](#new-features)
+- [Pretrained Checkpoints](#pretrained-checkpoints)
 - [Downstream models](#downstream-models)
 - [Usage](#usage)
+- [Example Notebooks](#example-notebooks)
 - [Development](#development-and-contact)
-- [Citation](#citations)
-- [To-do](#to-do)
+- [Citations](#citations)
 
 ## Installation
 
@@ -41,174 +36,319 @@ Clone the repository and install the package using pip:
 git clone https://github.com/zpengmei/geom2vec.git
 cd geom2vec/
 pip install -e .
+# Optional: install training dependencies (PyTorch + PyG stack, optimizers, etc.)
+pip install -e .[torch,pyg,optim]
 ```
 
 ## Repository structure
 
 The repository is organized as follows:
 
-- `geom2vec` contains the main classes and functions for the framework.
+- `src/geom2vec` contains the runtime package exposed on install.
 - `checkpoints` contains the pretrained GNN parameters for different architectures.
 - `examples` contains basic tutorials for using the package.
 
-Under `geom2vec`:
+Under `src/geom2vec`:
 
-- `geom2vec.data` contains the data-relevant class and processing utils.
-- `geom2vec.downstream_models` contains models for downstream tasks, e.g., SPIB or VAMPnets.
-- `geom2vec.layers` contains building blocks (MLPs and Token mixing layers) for the general network architecture.
-Instead, users should directly use the `geom2vec.downstream_models.lobe.Lobe` class for best performance and convenience.
-- `geom2vec.pretrain` contains dataset classes and training scripts for pretraining the GNNs 
+- `geom2vec.data` contains data I/O helpers, preprocessing utilities, and feature packing logic.
+- `geom2vec.models.representation` bundles pretrained GNN architectures (TorchMD-ET, ViSNet, TensorNet).
+- `geom2vec.models.downstream` provides downstream heads (Lobe variants) and task-specific models (VAMPNet, SPIB).
+- `geom2vec.nn` contains reusable neural network layers and mixers.
+- `geom2vec.train` contains dataset classes and CLI scripts for pretraining the GNNs 
 in case users want to train their own models.
-- `geom2vec.representation_models` contains the main classes various GNN architectures 
-that can be used for representation learning. Currently, we support [TorchMD-ET](https://github.com/torchmd/torchmd-net), 
-[ViSNet](https://pytorch-geometric.readthedocs.io/en/latest/generated/torch_geometric.nn.models.ViSNet.html), [TensorNet](https://github.com/torchmd/torchmd-net).
 
 For convenience, we put common functionalities as follows:
-- `geom2vec.create_model` is a wrapper function to load the pretrained GNN models.
-- `geom2vec.Lobe` is a general class for downstream tasks, which can be used to define the downstream models.
+- `geom2vec.create_model` is a wrapper function to load the pretrained GNN models with manual configuration.
+- `geom2vec.create_model_from_checkpoint` automatically infers model hyperparameters from checkpoint filenames.
+- `geom2vec.Lobe` is a general class for downstream tasks, which can be used to define downstream models end-to-end.
+
+## New Features
+
+![New Features](resources/new_feats.png)
+
+### Token Merging Module (TMM)
+
+The `Lobe` downstream head now includes an optional **token merging** mechanism that downsamples tokens before applying the mixer. This is useful for systems with many tokens (e.g., large proteins with many residues) where full attention is computationally expensive.
+
+![Token Merging Memory Usage](resources/tmm_mem.png)
+
+- **`ScalarMerger`**: For standard (non-equivariant) representations, groups tokens into fixed windows and projects concatenated features via an MLP.
+- **`EquivariantTokenMerger`**: For equivariant representations, separately merges scalar and vector channels while preserving trans/roto-equivariance.
+
+Enable token merging by setting `merger=True` and specifying `merger_window`:
+
+```python
+lobe = Lobe(
+    ...,
+    merger=True,
+    merger_window=4,  # merge every 4 tokens into 1
+)
+```
+
+### Equivariant Transformer
+
+When `equi_rep=True`, the `Lobe` uses an **Equivariant Self-Attention** mixer instead of a standard transformer. This module processes scalar and vector features while maintaining SE(3) equivariance:
+
+- **Scalar attention**: Standard multi-head self-attention on the scalar channel.
+- **Vector attention**: Aggregates vector features using attention weights derived from scalars.
+- **Gated vector updates**: Uses invariant features (dot products and norms of vectors) to compute gates that modulate vector updates, ensuring rotation equivariance.
+- **Cross-channel interaction**: Scalar outputs are updated using vector invariants (dot products and norms), enabling information flow between scalar and vector representations.
+
+The equivariant attention supports two backends:
+- `equi_backend="torch"`: Pure PyTorch implementation (works on CPU and GPU).
+- `equi_backend="triton"`: Optimized Triton FlashAttention kernel (requires Triton).
+
+![Triton Throughput and Memory Benchmark](resources/triton_bench.png)
+
+```python
+lobe = Lobe(
+    ...,
+    equi_rep=True,
+    equi_backend="triton",  # or "torch"
+    nhead=8,
+    num_mixer_layers=4,
+)
+```
+
+### Discriminative Power of Equivariant Transformer
+
+The equivariant transformer demonstrates strong discriminative power in distinguishing subtle geometric differences:
+
+**K-fold Rotation Discrimination**: The global equivariant attention mechanism can effectively differentiate between k-fold rotational symmetries. For each fold, we generate random pairs composed of an original graph and its rotated copy (rotation angle randomly determined and smaller than its intrinsic rotation angle). Results show significantly improved accuracy compared to local message-passing approaches (including spherical harmonic ones).
+
+![K-fold Rotation Discrimination](resources/k_fold_table.png)
+
+**K-chain Long-range Interaction**: The transformer architecture enables modeling of long-range interactions across protein chains. The figure below shows training curves and testing accuracies when learning to differentiate the k-chain example using (Left) four layers of TorchMD-ET vs. (Right) two layers of Equivariant Self-Attention (EqSDPA).
+
+![K-chain Long-range Interaction](resources/kchain.png)
+
+## Pretrained Checkpoints
+
+We provide pretrained checkpoints for three GNN architectures in the `checkpoints/` folder:
+
+| Architecture | Checkpoint | Layers | Hidden | RBF | Cutoff (Å) |
+|--------------|-----------|--------|--------|-----|------------|
+| ViSNet | `visnet_l6_h64_rbf64_r75.pth` | 6 | 64 | 64 | 7.5 |
+| ViSNet | `visnet_l6_h128_rbf64_r75.pth` | 6 | 128 | 64 | 7.5 |
+| ViSNet | `visnet_l6_h256_rbf64_r75.pth` | 6 | 256 | 64 | 7.5 |
+| ViSNet | `visnet_l6_h256_rbf32_r5_pcqm.pth` | 6 | 256 | 32 | 5.0 |
+| ViSNet | `visnet_l9_h256_rbf32_r5_pcqm.pth` | 9 | 256 | 32 | 5.0 |
+| TorchMD-ET | `et_l6_h64_rbf64_r75.pth` | 6 | 64 | 64 | 7.5 |
+| TorchMD-ET | `et_l6_h128_rbf64_r75.pth` | 6 | 128 | 64 | 7.5 |
+| TorchMD-ET | `et_l6_h256_rbf64_r75.pth` | 6 | 256 | 64 | 7.5 |
+| TensorNet | `tensornet_l2_h200_rbf32_r5.pth` | 2 | 200 | 32 | 5.0 |
+| TensorNet | `tensornet_l3_h64_rbf32_r5.pth` | 3 | 64 | 32 | 5.0 |
+| TensorNet | `tensornet_l3_h128_rbf32_r5.pth` | 3 | 128 | 32 | 5.0 |
+| TensorNet | `tensornet_l3_h256_rbf32_r5.pth` | 3 | 256 | 32 | 5.0 |
 
 ## Downstream models
 
-We support several dynamics models.
-- `geom2vec.downstream_models.VAMPNet` is a class for dimensionality reduction using VAMPNet.
-- `geom2vec.downstream_models.StopVAMPNet` is a class for dimensionality reduction using VAMPNet with boundary conditions.
-- `geom2vec.downstream_models.SPIB` is a class for constructing MSMs using SPIB
-- `geom2vec.downstream_models.VCN` is a class for variational committor function estimation.
+We support several dynamics models:
+- `geom2vec.models.downstream.VAMPNet` is a class for dimensionality reduction using VAMPNet.
+- `geom2vec.models.downstream.VAMPWorkflow` provides a high-level interface for training VAMPNet on embeddings.
+- `geom2vec.models.downstream.BiasedVAMPWorkflow` extends VAMPWorkflow with support for biased MD simulations (reweighting).
+- `geom2vec.models.downstream.SPIBModel` implements the State Predictive Information Bottleneck for constructing MSMs.
+- `geom2vec.models.downstream.Lobe` is the recommended downstream head for mixing scalar/vector features.
+  When `equi_rep=True`, Lobe uses an equivariant transformer (optionally with a FlashAttention Triton kernel) token mixer built from `EquivariantSelfAttention` blocks:
+  scalar channels are processed with standard multi-head attention, while vector channels are updated via gated, rotation-equivariant updates based on vector norms and inner products efficiently.
 
 ## Usage
 
-1. Define the representation model and load the pretrained weights:
-
-```python
-from geom2vec import create_model
-
-rep_model = create_model(
-    model_type = 'tn',
-    checkpoint_path = './checkpoints/tensornet_l3_h128_rbf32_r5.pth',
-    cutoff = 5,
-    hidden_channels = 128,
-    num_layers = 3,
-    num_rbf = 32,
-    device = 'cuda'
-)
-```
-
-2. Use the model to compute the vector representations of molecular conformations (we use [MDAnalysis](https://www.mdanalysis.org/) to load and process the trajectories):
-
-```python
-import os
-from geom2vec.data import extract_mda_info_folder
-from geom2vec.data import infer_traj
-
-
-topology_file = "your_path_to_top_file"
-trajectory_folder = "your_path_to_traj_files" 
-
-position_list, atomic_numbers, segment_counts, dcd_files = extract_mda_info_folder(
-    folder = trajectory_folder,
-    top_file = topology_file,
-    stride = 10,
-    selection = 'prop mass > 1.1',
-)
-
-folder_path = 'your_path_to_save_vector_representations'
-if not os.path.exists(folder_path):
-    os.makedirs(folder_path)
-
-# infer the trajectory
-infer_traj(
-    model = rep_model,
-    hidden_channels = 128,
-    batch_size = 100,
-    data = position_list,
-    atomic_numbers = atomic_numbers,
-    cg_mapping = segment_counts, 
-    saving_path = folder_path,
-    torch_or_numpy = 'torch',
-)
-```
-
-3. Once finished, users can refer to `geom2vec.downstream_models` for downstream tasks. We provide tutorials for these tasks
-in the `examples` folder. From `geom2vec.Lobe`, users can find the general model architecture
-for all downstream tasks.
-The `Lobe` class can be defined as follows:
+### 1. Loading a Pretrained Model
 
 ```python
 import torch
-from geom2vec import Lobe
+from geom2vec import create_model_from_checkpoint
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+checkpoint_path = "checkpoints/visnet_l6_h64_rbf64_r75.pth"
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Define a simple MLP model without token mixing layers
-# input shape: (batch_size, 4, hidden_channels) 4 refers to the scalar and vector parts of the representation
-# output shape: (batch_size, output_channels)
+# Hyperparameters are automatically inferred from the checkpoint filename
+model = create_model_from_checkpoint(checkpoint_path, device=device)
+```
 
-mlp = Lobe(
-    hidden_channels=128,
-    intermediate_channels=128,
-    output_channels=2, 
-    num_layers=3,
-    batch_norm=False,
-    vector_feature=True, # Whether to use the vector representation or just the scalar part
-    mlp_dropout=0.1,
-    mlp_out_activation=None,
-    device=device,
-)
+### 2. Batch Inference with MDAnalysis
 
-# Define a model with token mixing layers (SubFormer, Transformer on CG tokens)
-# input shape: (batch_size, num_tokens, 4, hidden_channels)
-# output shape: (batch_size, output_channels)
+Use `infer_mdanalysis_folder` to extract embeddings from trajectory files:
 
-subformer = Lobe(
-    hidden_channels=128,
-    intermediate_channels=128,
-    output_channels=2,
-    num_layers=3,
-    batch_norm=False,
-    vector_feature=True,
-    mlp_dropout=0.1,
-    mlp_out_activation=None,
-    token_mixer = 'subformer',
-    num_mixer_layers = 4,
-    expansion_factor = 2,
-    pooling = 'cls',
-    dropout = 0.2,
-    device=device,
-)
+```python
+from pathlib import Path
+from geom2vec import create_model_from_checkpoint
+from geom2vec.data import infer_mdanalysis_folder
 
-# Define a model with token mixing layers (SubMixer, MLP-Mixer on CG tokens)
-# input shape: (batch_size, num_tokens, 4, hidden_channels)
-# output shape: (batch_size, output_channels)
+model = create_model_from_checkpoint("checkpoints/visnet_l6_h64_rbf64_r75.pth", device="cuda")
 
-submixer = Lobe(
-    hidden_channels=128,
-    intermediate_channels=128,
-    output_channels=2,
-    num_layers=3,
-    batch_norm=False,
-    vector_feature=True,
-    mlp_dropout=0.1,
-    mlp_out_activation=None,
-    token_mixer = 'submixer',
-    num_mixer_layers = 4,
-    expansion_factor = 2,
-    pooling = 'mean',
-    dropout = 0.3,
-    num_tokens = 10,
-    token_dim = 24,
-    device=device,
+summary = infer_mdanalysis_folder(
+    model=model,
+    topology_file="topology.pdb",
+    trajectory_folder="trajectories/",
+    output_dir="embeddings/",
+    stride=100,                    # stride for reading frames
+    selection="prop mass > 1.1",   # MDAnalysis selection (e.g., heavy atoms)
+    batch_size=32,
+    reduction="sum",               # how to aggregate atom features
+    overwrite=False,               # skip already processed files
 )
 ```
 
+### 3. Training VAMPNet on Embeddings
+
+```python
+import torch
+from geom2vec.models.downstream import Lobe, VAMPWorkflow
+from geom2vec.models.downstream.vamp.vampnet import VAMPNetConfig
+
+# Load precomputed embeddings
+embedding_paths = sorted(Path("embeddings/").glob("*.pt"))
+trajectories = [torch.load(p) for p in embedding_paths]
+
+hidden_channels = trajectories[0].shape[-1]
+num_tokens = trajectories[0].shape[1]
+
+# Build a Lobe head
+lobe = Lobe(
+    input_channels=hidden_channels,
+    hidden_channels=hidden_channels,
+    output_channels=3,              # number of CVs
+    num_mlp_layers=2,
+    num_tokens=num_tokens,
+    equi_rep=True,                  # use equivariant attention mixer
+    equi_backend="triton",          # or "torch" for CPU
+).cuda()
+
+# Configure and run workflow
+config = VAMPNetConfig(
+    device="cuda",
+    learning_rate=1e-4,
+    score_method="vamp-2",
+)
+
+workflow = VAMPWorkflow(
+    lobe=lobe,
+    trajectories=trajectories,
+    lag_time=1,
+    config=config,
+    train_fraction=0.8,
+    batch_size=1000,
+)
+
+vamp = workflow.fit(n_epochs=100)
+
+# Extract collective variables
+train_cvs = workflow.get_cvs(split="train")
+```
+
+### 4. SPIB for Markov State Model Construction
+
+After training VAMPNet, use SPIB for discrete state discovery:
+
+```python
+import numpy as np
+from sklearn.cluster import MiniBatchKMeans
+from geom2vec.data import Preprocessing
+from geom2vec.models.downstream import SPIBModel, Lobe
+
+# Cluster VAMPNet CVs to get initial labels
+cvs = workflow.transform(trajectories, instantaneous=True, return_cv=True)
+kmeans = MiniBatchKMeans(n_clusters=50, random_state=0)
+labels = kmeans.fit_predict(np.concatenate(cvs))
+
+# Split labels per trajectory
+labels_per_traj = []
+offset = 0
+for traj in cvs:
+    labels_per_traj.append(labels[offset:offset + len(traj)])
+    offset += len(traj)
+
+# Create SPIB datasets
+preprocess = Preprocessing(dtype=torch.float32, backend="none")
+train_dataset, test_dataset = preprocess.create_spib_train_test_datasets(
+    data_list=trajectories,
+    label_list=labels_per_traj,
+    train_fraction=0.8,
+    lag_time=2,
+    output_dim=50,
+)
+
+# Train SPIB
+spib_lobe = Lobe(
+    input_channels=hidden_channels,
+    hidden_channels=hidden_channels,
+    output_channels=128,
+    num_mlp_layers=2,
+    num_tokens=num_tokens,
+    equi_rep=True,
+).cuda()
+
+spib = SPIBModel.from_lobe(
+    lobe=spib_lobe,
+    num_tokens=num_tokens,
+    hidden_channels=hidden_channels,
+    output_dim=50,
+    lag_time=2,
+    device="cuda",
+)
+
+spib.fit(train_dataset, test_dataset, batch_size=2048, patience=5, refinements=5)
+```
+
+### 5. Biased VAMP Workflow (Reweighted Dynamics)
+
+For biased MD simulations (e.g., metadynamics), use `BiasedVAMPWorkflow`:
+
+```python
+import numpy as np
+from geom2vec.models.downstream.vamp.workflow import BiasedVAMPWorkflow
+
+# Compute log weights from bias potential (e.g., PLUMED COLVAR)
+k_b = 0.008314  # kJ mol^-1 K^-1
+temperature = 300.0
+beta = 1.0 / (k_b * temperature)
+log_weights = beta * bias_potential  # from COLVAR file
+
+# Prepare trajectory entries with coordinates for merger
+trajectory_entries = [{"graph_features": embeddings, "ca_coords": residue_coords}]
+
+workflow = BiasedVAMPWorkflow(
+    lobe=lobe,
+    trajectories=trajectory_entries,
+    lag_time=1,
+    log_weights=[log_weights],
+    batch_size=1024,
+    train_fraction=0.8,
+    config=config,
+)
+
+vamp = workflow.fit(n_epochs=150)
+```
+
+## Example Notebooks
+
+See the `examples/` folder for complete tutorials:
+- `1_infer_mdanalysis.ipynb`: Batch inference using MDAnalysis
+- `2_vamp_workflow.ipynb`: VAMPNet training workflow
+- `3_vamp_spib_workflow.ipynb`: Combined VAMPNet + SPIB pipeline
+- `4_biased_vamp_workflow.ipynb`: Biased VAMP for reweighted dynamics
+
 ## Development and contact
 
-We are currently are active developing the package. If you have any questions or suggestions, please feel free to
+We are actively developing the package. If you have any questions or suggestions, please feel free to
 open an issue or contact us directly.
 
 ## Citations
 
 If you use this package in your research, please cite the following papers:
 ```bibtex
+@misc{pengmei2025hierarchicalgeometricdeeplearning,
+      title={Hierarchical geometric deep learning enables scalable analysis of molecular dynamics}, 
+      author={Zihan Pengmei and Spencer C. Guo and Chatipat Lorpaiboon and Aaron R. Dinner},
+      year={2025},
+      eprint={2512.06520},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2512.06520}, 
+}
+
 @article{pengmei2025using,
   title={Using pretrained graph neural networks with token mixers as geometric featurizers for conformational dynamics},
   author={Pengmei, Zihan and Lorpaiboon, Chatipat and Guo, Spencer C and Weare, Jonathan and Dinner, Aaron R},
@@ -232,14 +372,6 @@ If you use this package in your research, please cite the following papers:
     author={Zihan Pengmei and Zimu Li and Chih-chan Tien and Risi Kondor and Aaron R. Dinner},
     year={2023},
     eprint={2310.01704},
-    archivePrefix={arXiv},
-    primaryClass={cs.LG}
-}
-@misc{pengmei2024technical,
-    title={Technical Report: The Graph Spectral Token -- Enhancing Graph Transformers with Spectral Information}, 
-    author={Zihan Pengmei and Zimu Li},
-    year={2024},
-    eprint={2404.05604},
     archivePrefix={arXiv},
     primaryClass={cs.LG}
 }
@@ -300,13 +432,3 @@ Please consider citing the following papers for each of the downstream tasks:
 	pages = {134111},
 }
 ```
-
-## To-do
-
-- [ ] Add [subspace iteration](https://github.com/dinner-group/inexact-subspace-iteration) to the downstream models for 
-committor function estimation and MFPT calculation.
-
-## Why mix tokens?
-We share the same opinion as shown below:
-
-![meme](resources/meme.jpg)

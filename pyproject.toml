@@ -1,13 +1,41 @@
-[tool.poetry]
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
 name = "geom2vec"
-version = "0.1.0"
-description = "Geom2Vec (geometry-to-vector) is a framework for compute vector representation of molecular conformations using pretrained graph neural networks."
-authors = [
-    "Zihan Pengmei <zpengmei@uchicago.edu>",
-    "Spencer Guo <scguo@uchicago.edu>",
-    "Chatipat Lorpaiboon <chatipat@uchicago.edu>"
-]
+version = "1.0.0"
+description = "Geom2Vec (geometry-to-vector) provides pretrained geometric representations for molecular simulations."
 readme = "README.md"
+authors = [
+    { name = "Zihan Pengmei", email = "zpengmei@uchicago.edu" },
+    { name = "Spencer Guo", email = "scguo@uchicago.edu" },
+    { name = "Chatipat Lorpaiboon", email = "chatipat@uchicago.edu" },
+]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "MDAnalysis",
+    "mdtraj",
+    "einops",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+torch = ["torch"]
+pyg = ["torch-geometric", "torch-scatter", "torch-cluster"]
+optim = ["grokfast_pytorch", "adam-atan2-pytorch"]
+pretrain = [
+    "ase",
+    "tensorboard",
+    "pytorch_lightning",
+    "torch",
+    "torch-geometric",
+    "torch-scatter",
+    "torch-cluster",
+]
+viz = ["matplotlib"]
 
 [project.urls]
 Homepage = "https://github.com/zpengmei/geom2vec"
