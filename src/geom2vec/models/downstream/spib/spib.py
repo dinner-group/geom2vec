@@ -7,7 +7,7 @@ import numpy as np
 from .vae import SPIBVAE
 from .base import SPIB
 from ..vamp.vampnet import _default_ca_coords_from_features
-from geom2vec.data.features import FlatFeatureSpec, unpacking_features
+from geom2vec.data.features import FlatFeatureSpec, unpacking_features, packing_features
 
 
 class _LobeEncoder(nn.Module):
@@ -555,10 +555,49 @@ class SPIBModel(SPIBVAE):
         """
         self.eval()
 
-        if isinstance(data, torch.Tensor):
+        # Normalise `data` into a single 2D tensor of shape (frames, features).
+        # Supports:
+        # - np.ndarray or torch.Tensor with leading frame dimension (original behaviour).
+        # - Sequence of dicts/tensors/arrays representing trajectories, including
+        #   dict entries from `build_trajectories_from_embedding_dir` with
+        #   `graph_features` and optional `ca_coords`. When CA coordinates are
+        #   present, they are packed together with the features so that the
+        #   shared Lobe can recover them via `_LobeEncoder`.
+        if isinstance(data, (list, tuple)):
+            flat_np_list = []
+            for entry in data:
+                if isinstance(entry, dict) and "graph_features" in entry:
+                    gf = entry["graph_features"]
+                    ca = entry.get("ca_coords")
+
+                    gf_t = gf.detach().cpu() if isinstance(gf, torch.Tensor) else torch.as_tensor(gf)
+                    if gf_t.dim() == 3:
+                        gf_t = gf_t.unsqueeze(1)  # (frames, 1, 4, H)
+
+                    if gf_t.dim() >= 3 and ca is not None:
+                        ca_t = ca.detach().cpu() if isinstance(ca, torch.Tensor) else torch.as_tensor(ca)
+                        if ca_t.dim() == 2:
+                            ca_t = ca_t.unsqueeze(0).expand(gf_t.shape[0], -1, -1)
+                        elif ca_t.dim() == 3 and ca_t.shape[0] == 1 and gf_t.shape[0] != 1:
+                            ca_t = ca_t.expand(gf_t.shape[0], -1, -1)
+                        packed = packing_features(
+                            graph_features=gf_t,
+                            num_tokens=gf_t.shape[1],
+                            ca_coords=ca_t,
+                        )
+                    else:
+                        packed = gf_t.reshape(gf_t.shape[0], -1)
+
+                    flat_np_list.append(packed.numpy().astype(np.float32))
+                else:
+                    flat_np_list.append(np.asarray(entry, dtype=np.float32))
+
+            data_array = np.concatenate(flat_np_list, axis=0)
+            inputs = torch.from_numpy(data_array).float()
+        elif isinstance(data, torch.Tensor):
             inputs = data
         else:
-            inputs = torch.from_numpy(data.copy()).float()
+            inputs = torch.from_numpy(np.asarray(data).copy()).float()
 
         all_prediction = []
         all_z_mean = []
