@@ -114,6 +114,8 @@ class Lobe(nn.Module):
         dropout: float = 0.1,
         radius_cutoff: float = 8.0,
         equi_backend: str = "torch",
+        qk_conv: bool = True,
+        qk_conv_len: int = 4,
         ):
         super().__init__()
 
@@ -167,7 +169,11 @@ class Lobe(nn.Module):
             blocks = []
             for _ in range(num_mixer_layers):
                 if self.equi_backend == "torch":
-                    attention_module = EquivariantSelfAttention(hidden_channels, nhead)
+                    attention_module = EquivariantSelfAttention(hidden_channels=hidden_channels, 
+                                                                num_heads=nhead,
+                                                                vector_mixing='concat', 
+                                                                qk_conv=qk_conv,
+                                                                qk_conv_len=qk_conv_len)
                 else:
                     try:
                         from geom2vec.nn.triton.eqsdpa.attention import EquivariantSelfAttentionTriton
@@ -175,7 +181,11 @@ class Lobe(nn.Module):
                         raise ImportError(
                             "EquivariantSelfAttentionTriton requires Triton to be installed."
                         ) from exc
-                    attention_module = EquivariantSelfAttentionTriton(hidden_channels, nhead)
+                    attention_module = EquivariantSelfAttentionTriton(hidden_channels=hidden_channels, 
+                                                                      num_heads=nhead,
+                                                                      vector_mixing='concat', 
+                                                                      qk_conv=qk_conv,
+                                                                      qk_conv_len=qk_conv_len)
 
                 blocks.append(
                     EquivariantAttentionBlock(

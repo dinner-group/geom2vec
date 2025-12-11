@@ -87,7 +87,9 @@ lobe = Lobe(
 
 ### Equivariant Transformer
 
-When `equi_rep=True`, the `Lobe` uses an **Equivariant Self-Attention** mixer instead of a standard transformer. This module processes scalar and vector features while maintaining SE(3) equivariance:
+When `equi_rep=True`, the `Lobe` uses an **Equivariant Self-Attention** mixer instead of a standard transformer, and can optionally build the query/key projections from local geometry via a short convolution on the latent vector field. In this mode it can capture local backbone geometry such as segment orientation, curvature, and torsion/dihedral relationships between neighboring residues, while remaining invariant to global rotations and translations. 
+
+This module processes scalar and vector features while maintaining SE(3) equivariance:
 
 - **Scalar attention**: Standard multi-head self-attention on the scalar channel.
 - **Vector attention**: Aggregates vector features using attention weights derived from scalars.
@@ -107,6 +109,8 @@ lobe = Lobe(
     equi_backend="triton",  # or "torch"
     nhead=8,
     num_mixer_layers=4,
+    qk_conv=True,          # use local Q/K conv
+    qk_conv_len=4,         # window size along sequence
 )
 ```
 

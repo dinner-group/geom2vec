@@ -11,6 +11,7 @@ from .backward_kernel import (
     launch_dq_calculation_kernel,
     launch_dkdv_calculation_kernel,
 )
+from ...local_conv import LocalQKConv
 
 # disable TF32 for Triton kernels
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -110,7 +111,8 @@ class EquivariantSelfAttentionTriton(nn.Module):
     """
 
     def __init__(self, hidden_channels, num_heads, window_size=None,
-                 vector_mixing='add', vector_gating=True):
+                 vector_mixing='add', vector_gating=True, qk_conv: bool = False,
+                 qk_conv_len: int = 3):
         super().__init__()
         # --- Initialize parameters exactly like the original class ---
         assert vector_mixing in ['add', 'concat'], "vector_mixing must be either 'add' or 'concat'"
@@ -124,10 +126,21 @@ class EquivariantSelfAttentionTriton(nn.Module):
         self.hidden_channels = hidden_channels
         self.num_heads = num_heads
         self.head_dim = hidden_channels // num_heads
+        self.qk_conv = qk_conv
+        self.qk_conv_len = qk_conv_len
 
-        self.q_proj = nn.Linear(hidden_channels, hidden_channels)
-        self.k_proj = nn.Linear(hidden_channels, hidden_channels)
-        self.v_proj = nn.Linear(hidden_channels, hidden_channels)
+        if self.qk_conv:
+            self.local_qk_conv = LocalQKConv(
+                hidden_channels=self.hidden_channels,
+                window_size=self.qk_conv_len,
+            )
+            # v_proj stays linear
+            self.v_proj = nn.Linear(self.hidden_channels, self.hidden_channels)
+        else:
+            self.q_proj = nn.Linear(self.hidden_channels, self.hidden_channels)
+            self.k_proj = nn.Linear(self.hidden_channels, self.hidden_channels)
+            self.v_proj = nn.Linear(self.hidden_channels, self.hidden_channels)
+
         self.o_proj = nn.Linear(hidden_channels, hidden_channels * 3)
         self.vec_proj = nn.Linear(hidden_channels, hidden_channels * 2, bias=False)
         self.alpha_dot = nn.Parameter(torch.tensor(1.0))
@@ -157,8 +170,12 @@ class EquivariantSelfAttentionTriton(nn.Module):
         vec = x[:, :, 1:].contiguous()
         vec_res = vec.clone()
 
-        q = self.q_proj(x_scalar)
-        k = self.k_proj(x_scalar)
+        if self.qk_conv:
+            q, k = self.local_qk_conv(x_scalar, vec)
+        else:
+            q = self.q_proj(x_scalar)
+            k = self.k_proj(x_scalar)
+
         v = self.v_proj(x_scalar)
 
         q = q.view(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3).contiguous() # (B, H, N, Dh)
