@@ -242,7 +242,7 @@ class Preprocessing:
 
     def create_spib_train_test_datasets(
         self,
-        data_list: Sequence[np.ndarray | torch.Tensor],
+        data_list: Sequence[np.ndarray | torch.Tensor | dict],
         label_list: Sequence[np.ndarray | torch.Tensor],
         train_fraction: float,
         lag_time: int,
@@ -255,8 +255,12 @@ class Preprocessing:
 
         Parameters
         ----------
-        data_list : sequence of trajectory arrays or tensors
-            Each element has shape (frames, ...), e.g. (frames, num_tokens, 4, hidden_dim).
+        data_list : sequence of trajectory arrays, tensors, or dicts
+            Each element has shape ``(frames, ...)``. When elements are dicts
+            (e.g. as returned by :func:`build_trajectories_from_embedding_dir`),
+            the ``\"graph_features\"`` entry is flattened per frame and, when
+            available, ``\"ca_coords\"`` are packed alongside using
+            :func:`geom2vec.data.features.packing_features`.
         label_list : sequence of label arrays or tensors
             One label per frame for each trajectory.
         train_fraction : float
@@ -286,6 +290,49 @@ class Preprocessing:
                 return x.detach().cpu().numpy()
             return np.asarray(x)
 
+        def _to_feature_array(x: np.ndarray | torch.Tensor | dict) -> np.ndarray:
+            """Normalise inputs to a 2D (frames, features) array.
+
+            Supports:
+            - raw numpy arrays or tensors with leading frame dimension, and
+            - dict entries from :func:`build_trajectories_from_embedding_dir`
+              containing ``graph_features`` and optional ``ca_coords``.
+
+            When CA coordinates are present, they are packed together with the
+            graph features using :func:`packing_features` so that downstream
+            models (e.g. :class:`SPIBModel.from_lobe`) can recover both via
+            :func:`unpacking_features`.
+            """
+            if isinstance(x, dict):
+                if "graph_features" not in x:
+                    raise ValueError("SPIB data dict must contain 'graph_features'.")
+                graph = x["graph_features"]
+                ca = x.get("ca_coords")
+
+                graph_t = graph if isinstance(graph, torch.Tensor) else torch.as_tensor(graph, dtype=self._dtype)
+                if graph_t.dim() == 3:
+                    # (frames, 4, H) -> (frames, 1, 4, H)
+                    graph_t = graph_t.unsqueeze(1)
+
+                if graph_t.dim() >= 3 and ca is not None:
+                    ca_t = ca if isinstance(ca, torch.Tensor) else torch.as_tensor(ca, dtype=self._dtype)
+                    if ca_t.dim() == 2:
+                        ca_t = ca_t.unsqueeze(0).expand(graph_t.shape[0], -1, -1)
+                    elif ca_t.dim() == 3 and ca_t.shape[0] == 1 and graph_t.shape[0] != 1:
+                        ca_t = ca_t.expand(graph_t.shape[0], -1, -1)
+                    features_t = packing_features(
+                        graph_features=graph_t,
+                        num_tokens=graph_t.shape[1],
+                        ca_coords=ca_t,
+                    )
+                else:
+                    # Fall back to simple flattening over non-frame dimensions.
+                    features_t = graph_t.reshape(graph_t.shape[0], -1)
+
+                return features_t.detach().cpu().numpy()
+
+            return _to_numpy(x)
+
         train_data_list_np: List[np.ndarray] = []
         train_label_list_np: List[np.ndarray] = []
         test_data_list_np: List[np.ndarray] = []
@@ -295,7 +342,7 @@ class Preprocessing:
         test_weight_list_np: Optional[List[np.ndarray]] = [] if weight_list is not None else None
 
         for idx, (data, labels) in enumerate(zip(data_list, label_list)):
-            data_np = _to_numpy(data)
+            data_np = _to_feature_array(data)
             labels_np = _to_numpy(labels)
             if data_np.shape[0] != labels_np.shape[0]:
                 raise ValueError(

@@ -7,6 +7,7 @@ import numpy as np
 from .vae import SPIBVAE
 from .base import SPIB
 from ..vamp.vampnet import _default_ca_coords_from_features
+from geom2vec.data.features import FlatFeatureSpec, unpacking_features
 
 
 class _LobeEncoder(nn.Module):
@@ -45,11 +46,24 @@ class _LobeEncoder(nn.Module):
         if not isinstance(graph_features, torch.Tensor):
             raise TypeError("graph_features must be a torch.Tensor.")
 
-        # Accept either flat inputs (batch, num_tokens * 4 * hidden_channels)
-        # or graph-shaped inputs (batch, num_tokens, 4, hidden_channels).
+        # Accept either:
+        # - flat inputs: (batch, num_tokens * 4 * hidden_channels) or packed
+        #   features produced by `packing_features`, or
+        # - graph-shaped inputs: (batch, num_tokens, 4, hidden_channels).
         if graph_features.dim() == 2:
+            batch, feat_dim = graph_features.shape
+            expected_flat = self.num_tokens * 4 * self.hidden_channels
+            if feat_dim == expected_flat:
+                graph_features = graph_features.view(batch, self.num_tokens, 4, self.hidden_channels)
+            else:
+                # Try to interpret as packed features (graph + CA coords).
+                spec = FlatFeatureSpec(num_tokens=self.num_tokens, hidden_dim=self.hidden_channels)
+                unpacked = unpacking_features(graph_features, spec.num_tokens, spec.hidden_dim)
+                graph_features = unpacked["graph_features"]
+                ca_from_packed = unpacked["ca_coords"]
+                if ca_from_packed is not None:
+                    ca_coords = ca_from_packed.to(device=graph_features.device, dtype=graph_features.dtype)
             batch = graph_features.shape[0]
-            graph_features = graph_features.view(batch, self.num_tokens, 4, self.hidden_channels)
         elif graph_features.dim() == 4:
             batch = graph_features.shape[0]
         else:
