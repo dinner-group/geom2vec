@@ -114,6 +114,7 @@ class Lobe(nn.Module):
         dropout: float = 0.1,
         radius_cutoff: float = 8.0,
         equi_backend: str = "torch",
+        vec_mixing: str = "add",
         qk_conv: bool = True,
         qk_conv_len: int = 4,
         ):
@@ -171,7 +172,7 @@ class Lobe(nn.Module):
                 if self.equi_backend == "torch":
                     attention_module = EquivariantSelfAttention(hidden_channels=hidden_channels, 
                                                                 num_heads=nhead,
-                                                                vector_mixing='concat', 
+                                                                vector_mixing=vec_mixing, 
                                                                 qk_conv=qk_conv,
                                                                 qk_conv_len=qk_conv_len)
                 else:
@@ -183,7 +184,7 @@ class Lobe(nn.Module):
                         ) from exc
                     attention_module = EquivariantSelfAttentionTriton(hidden_channels=hidden_channels, 
                                                                       num_heads=nhead,
-                                                                      vector_mixing='concat', 
+                                                                      vector_mixing=vec_mixing, 
                                                                       qk_conv=qk_conv,
                                                                       qk_conv_len=qk_conv_len)
 
