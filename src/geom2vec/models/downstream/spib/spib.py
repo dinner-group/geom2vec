@@ -95,11 +95,40 @@ class SPIBModel(SPIBVAE):
         learning_rate: float = 2e-4,
         lr_scheduler_gamma: float = 0.99,
         update_label: bool = True,
+        optimizer: str = "AdamAtan2",
     ) -> "SPIBModel":
         """Construct a SPIBModel that uses a graph-based lobe as encoder.
 
         The lobe is wrapped so that SPIB sees flat inputs internally but users
         can pass graph-shaped tensors of shape (batch, num_tokens, 4, hidden_channels).
+
+        Parameters
+        ----------
+        lobe :
+            Graph-based neural network to use as the encoder.
+        num_tokens :
+            Number of tokens per input frame.
+        hidden_channels :
+            Number of hidden channels in the graph features.
+        output_dim :
+            Number of discrete states in the output.
+        lag_time :
+            Time delay in frames for SPIB training.
+        device :
+            Torch device on which to run the model. Default: CPU.
+        z_dim :
+            Dimension of the latent bottleneck. Default: 2.
+        beta :
+            Trade-off between predictive capacity and model complexity. Default: 1e-3.
+        learning_rate :
+            Learning rate for the optimizer. Default: 2e-4.
+        lr_scheduler_gamma :
+            Multiplicative factor for learning rate decay. Default: 0.99.
+        update_label :
+            If True, iteratively refine labels during training. Default: True.
+        optimizer :
+            Name of the optimizer to use (e.g. "Adam", "AdamW", "AdamAtan2").
+            Default: "AdamAtan2".
         """
 
         torch_device = torch.device(device)
@@ -132,6 +161,7 @@ class SPIBModel(SPIBVAE):
             neuron_num2=encoder_dim,
             encoder=encoder,
         )
+        model.optimizer_name = optimizer
         return model.to(torch_device)
 
     @torch.no_grad()
@@ -339,7 +369,37 @@ class SPIBModel(SPIBVAE):
         return train_dataloader, test_dataloader
 
     def _configure_optimizer_and_scheduler(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        """Instantiate the requested optimizer with scheduler."""
+        optimizer_name = getattr(self, "optimizer_name", "AdamAtan2")
+        optimizer_map = {
+            "Adam": torch.optim.Adam,
+            "AdamW": torch.optim.AdamW,
+            "SGD": torch.optim.SGD,
+            "RMSprop": torch.optim.RMSprop,
+        }
+
+        if optimizer_name == "GrokFastAdamW":
+            try:
+                from grokfast_pytorch import GrokFastAdamW  # type: ignore
+            except ImportError as exc:
+                raise ImportError(
+                    "grokfast_pytorch is required for GrokFastAdamW. Install via `pip install grokfast_pytorch`."
+                ) from exc
+            optimizer_map[optimizer_name] = GrokFastAdamW
+        elif optimizer_name == "AdamAtan2":
+            try:
+                from adam_atan2_pytorch import AdamAtan2  # type: ignore
+            except ImportError as exc:
+                raise ImportError(
+                    "adam-atan2-pytorch is required for AdamAtan2. Install via `pip install adam-atan2-pytorch`."
+                ) from exc
+            optimizer_map[optimizer_name] = AdamAtan2
+
+        if optimizer_name not in optimizer_map:
+            raise ValueError(f"Unknown optimizer '{optimizer_name}'. Supported: {sorted(optimizer_map)}")
+
+        optimizer_cls = optimizer_map[optimizer_name]
+        optimizer = optimizer_cls(self.parameters(), lr=self.learning_rate)
         lr_lambda = lambda epoch: self.lr_scheduler_gamma ** epoch
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
         return optimizer, scheduler

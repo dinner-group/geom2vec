@@ -140,8 +140,6 @@ class Lobe(nn.Module):
 
         self.merger: Optional[Union[ScalarMerger, EquivariantTokenMerger]] = None
         if merger:
-            if merger_window <= 1 or merger_window > num_tokens:
-                raise ValueError("merger_window must be in the range [2, num_tokens].")
             if not equi_rep:
                 self.merger = ScalarMerger(window_size=merger_window, hidden_channels=hidden_channels)
             else:
@@ -273,6 +271,10 @@ class Lobe(nn.Module):
                 "Expected input of shape (batch, num_tokens, 4, hidden_channels)."
             )
 
+        # For equivariant representations, first project to the internal hidden width.
+        if self.equi_rep:
+            graph_features = self.input_projection(graph_features)
+
         batch_size, num_tokens, _, _ = graph_features.shape
         batch_index = torch.arange(batch_size, device=graph_features.device).repeat_interleave(num_tokens)
 
@@ -289,7 +291,9 @@ class Lobe(nn.Module):
             x, v = self.input_projection.pre_reduce(x=x, v=v)
 
         tokens = torch.cat([x.unsqueeze(1), v], dim=1)
-        tokens = self.gnn_layer(tokens, edge_index)
+        # Only apply the graph convolution when token merger is enabled.
+        if self.merger is not None:
+            tokens = self.gnn_layer(tokens, edge_index)
         tokens = tokens.reshape(batch_size, num_tokens, 4, -1)
 
         scalar_tokens = tokens[:, :, 0, :]
@@ -304,6 +308,10 @@ class Lobe(nn.Module):
         else:
             if self.merger is not None:
                 tokens = self.merger(tokens)
+            # Add positional encoding to scalar channel before mixing
+            if self.pos_encoding is not None:
+                scalar_with_pos = self.pos_encoding(tokens[:, :, 0, :])
+                tokens = torch.cat([scalar_with_pos.unsqueeze(2), tokens[:, :, 1:, :]], dim=2)
             for block in self.mixer:
                 tokens = block(tokens)
             scalar_tokens = tokens[:, :, 0, :]

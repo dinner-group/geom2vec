@@ -249,8 +249,18 @@ def count_segments(numbers: Sequence[int]) -> np.ndarray:
     return np.asarray([len(segment) for segment in segments], dtype=int)
 
 
-def extract_mda_info(protein, stride: int = 1, selection: Optional[str] = None):
-    """Extract atomic positions, atomic numbers, and segment counts from an MDAnalysis Universe."""
+def extract_mda_info(
+    protein,
+    stride: int = 1,
+    selection: Optional[str] = None,
+    return_ca: bool = False,
+):
+    """Extract atomic positions, atomic numbers, and segment counts from an MDAnalysis Universe.
+
+    When ``return_ca`` is True, this function also returns centered Cα
+    coordinates of shape ``(frames, residues, 3)`` sampled with the same
+    stride, using the selection ``\"name CA\"``.
+    """
 
     _require_mdanalysis()
 
@@ -266,11 +276,34 @@ def extract_mda_info(protein, stride: int = 1, selection: Optional[str] = None):
     ]
     atomic_numbers = [atomic_mapping[atom] for atom in atomic_types]
 
-    positions = [protein_residues.positions.copy() for _ in protein.trajectory]
-    positions = np.asarray(positions)[::stride]
+    if not return_ca:
+        positions = [protein_residues.positions.copy() for _ in protein.trajectory]
+        positions = np.asarray(positions)[::stride]
+        segment_counts = count_segments(protein_residues.resids)
+        return positions, np.array(atomic_numbers), np.array(segment_counts)
+
+    ca = None
+    try:
+        ca = protein.select_atoms("name CA")
+    except Exception:
+        ca = None
+
+    positions_frames = []
+    ca_frames = []
+    for _ts in protein.trajectory[::stride]:
+        positions_frames.append(protein_residues.positions.copy())
+        if ca is not None and getattr(ca, "n_atoms", 0) > 0:
+            ca_frames.append(ca.positions.copy())
+
+    positions = np.asarray(positions_frames)
     segment_counts = count_segments(protein_residues.resids)
 
-    return positions, np.array(atomic_numbers), np.array(segment_counts)
+    ca_array = None
+    if ca_frames:
+        ca_array = np.asarray(ca_frames, dtype=np.float32)
+        ca_array = ca_array - ca_array.mean(axis=1, keepdims=True)
+
+    return positions, np.array(atomic_numbers), np.array(segment_counts), ca_array
 
 
 def extract_mda_info_folder(
@@ -299,7 +332,11 @@ def extract_mda_info_folder(
         path = os.path.join(folder, traj)
         print(f"Processing {traj}")
         universe = mda.Universe(top_file, path)
-        positions, atomic_numbers, segment_counts = extract_mda_info(universe, stride=stride, selection=selection)
+        positions, atomic_numbers, segment_counts = extract_mda_info(
+            universe,
+            stride=stride,
+            selection=selection,
+        )
         position_list.append(positions)
         universes.append(universe)
         file_paths.append(path)
@@ -476,11 +513,22 @@ def infer_mdanalysis_folder(
 
         universe = mda.Universe(topology_file, traj_path)
         try:
-            positions, numbers, segment_counts = extract_mda_info(
+            positions, numbers, segment_counts, ca_array = extract_mda_info(
                 universe,
                 stride=stride,
                 selection=selection,
+                return_ca=True,
             )
+
+            try:
+                torch = _require_torch()
+            except ImportError:
+                ca_target = None
+            else:
+                if ca_array is not None:
+                    ca_target = target_dir / f"{Path(traj_path).stem}_ca.pt"
+                    if overwrite or not ca_target.exists():
+                        torch.save(torch.from_numpy(ca_array), ca_target)
         finally:
             trajectory = getattr(universe, "trajectory", None)
             close = getattr(trajectory, "close", None)

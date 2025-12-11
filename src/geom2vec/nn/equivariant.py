@@ -7,12 +7,12 @@ from torch.nn import Linear, Sequential
 
 try:
     from torch_scatter import scatter
-except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
     def scatter(*_args, **_kwargs):
         raise ModuleNotFoundError(
             "torch-scatter is required for EquivariantGraphConv. "
             "Install it via `pip install torch-scatter`."
-        ) from exc
+        )
 
 
 class GatedEquivariantBlock(nn.Module):
@@ -240,6 +240,7 @@ class EquiLinear(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.scalar_linear = nn.Linear(in_features, out_features, bias=bias)
+        # Apply the same linear transformation to each vector component to preserve equivariance
         self.vector_linear = nn.Linear(in_features, out_features, bias=False)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -247,21 +248,26 @@ class EquiLinear(nn.Module):
         if num_channels != 4:
             raise ValueError("EquiLinear expects 4 channels (1 scalar + 3 vectors).")
 
-        scalar = x[:, :, 0, :]
-        vector = x[:, :, 1:, :].permute(0, 1, 3, 2).reshape(batch_size, num_tokens, 3 * hidden_channels)
+        scalar = x[:, :, 0, :]  # (batch, tokens, hidden)
+        vector = x[:, :, 1:, :]  # (batch, tokens, 3, hidden)
 
-        scalar_out = self.scalar_linear(scalar)
-        vector_out = self.vector_linear(vector).view(batch_size, num_tokens, 3, self.out_features)
+        scalar_out = self.scalar_linear(scalar)  # (batch, tokens, out_features)
+
+        # Apply the same linear transformation to each vector component independently
+        # to preserve equivariance: reshape to (batch*tokens*3, hidden), apply linear,
+        # then reshape back to (batch, tokens, 3, out_features)
+        vector_flat = vector.reshape(batch_size * num_tokens * 3, hidden_channels)
+        vector_out_flat = self.vector_linear(vector_flat)
+        vector_out = vector_out_flat.view(batch_size, num_tokens, 3, self.out_features)
 
         return torch.cat([scalar_out.unsqueeze(2), vector_out], dim=2)
 
 class EquivariantTokenMerger(nn.Module):
     def __init__(self, window_size: int, hidden_channels: int):
         super().__init__()
-        if window_size < 2:
-            raise ValueError("window_size must be at least 2 for the equivariant merger.")
         self.window_size = window_size
         self.scalar_merge = nn.Linear(window_size * hidden_channels, hidden_channels, bias=True)
+        # Apply the same linear transformation to each vector component to preserve equivariance
         self.vector_merge = nn.Linear(window_size * hidden_channels, hidden_channels, bias=False)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -288,9 +294,15 @@ class EquivariantTokenMerger(nn.Module):
         scalar = x[:, :, :, 0, :].reshape(batch_size, new_tokens, self.window_size * hidden_channels)
         scalar = self.scalar_merge(scalar)
 
-        vector = x[:, :, :, 1:, :].permute(0, 1, 3, 2, 4)
-        vector = vector.reshape(batch_size, new_tokens, 3, self.window_size * hidden_channels)
-        vector = self.vector_merge(vector)
+        # For vectors: (batch, new_tokens, window_size, 3, hidden)
+        vector = x[:, :, :, 1:, :]  # (batch, new_tokens, window_size, 3, hidden)
+        # Apply the same transformation to each vector component independently
+        # Reshape to (batch*new_tokens*3, window_size*hidden), apply linear, reshape back
+        vector_flat = vector.permute(0, 1, 3, 2, 4).reshape(
+            batch_size * new_tokens * 3, self.window_size * hidden_channels
+        )
+        vector_out_flat = self.vector_merge(vector_flat)
+        vector = vector_out_flat.view(batch_size, new_tokens, 3, hidden_channels)
 
         return torch.cat([scalar.unsqueeze(2), vector], dim=2)
 
@@ -304,25 +316,39 @@ class EquivariantGraphConv(nn.Module):
         self.lin_scalar_rel = nn.Linear(hidden_channels, hidden_channels, bias=False)
         self.lin_scalar_root = nn.Linear(hidden_channels, hidden_channels)
 
-        self.lin_vector_rel = nn.Linear(3 * hidden_channels, 3 * hidden_channels, bias=False)
-        self.lin_vector_root = nn.Linear(3 * hidden_channels, 3 * hidden_channels, bias=False)
+        # Apply the same linear transformation to each vector component to preserve equivariance
+        self.lin_vector_rel = nn.Linear(hidden_channels, hidden_channels, bias=False)
+        self.lin_vector_root = nn.Linear(hidden_channels, hidden_channels, bias=False)
 
     def forward(self, x: Tensor, edge_index: Tensor) -> Tensor:
         if x.dim() != 3 or x.size(1) != 4:
             raise ValueError("EquivariantGraphConv expects input of shape (N, 4, hidden_channels).")
 
-        scalar = x[:, 0, :]
-        vector = x[:, 1:, :].reshape(x.size(0), -1)
+        scalar = x[:, 0, :]  # (N, hidden)
+        vector = x[:, 1:, :]  # (N, 3, hidden)
 
         row, col = edge_index
         scalar_messages = self.lin_scalar_rel(scalar[col])
-        vector_messages = self.lin_vector_rel(vector[col])
+
+        # Apply the same linear transformation to each vector component independently
+        # Reshape to (N*3, hidden), apply linear, reshape back to (N, 3, hidden)
+        num_nodes = vector.size(0)
+        vector_flat = vector[col].reshape(col.size(0) * 3, self.hidden_channels)
+        vector_messages_flat = self.lin_vector_rel(vector_flat)
+        vector_messages = vector_messages_flat.view(col.size(0), 3, self.hidden_channels)
 
         scalar_agg = scatter(scalar_messages, row, dim=0, dim_size=scalar.size(0), reduce=self.aggr)
-        vector_agg = scatter(vector_messages, row, dim=0, dim_size=vector.size(0), reduce=self.aggr)
+        # For vectors, scatter operates on the flattened version
+        vector_messages_for_scatter = vector_messages.reshape(col.size(0), 3 * self.hidden_channels)
+        vector_agg_flat = scatter(vector_messages_for_scatter, row, dim=0, dim_size=num_nodes, reduce=self.aggr)
+        vector_agg = vector_agg_flat.view(num_nodes, 3, self.hidden_channels)
 
         scalar_out = self.lin_scalar_root(scalar) + scalar_agg
-        vector_out = self.lin_vector_root(vector) + vector_agg
-        vector_out = vector_out.view(x.size(0), 3, self.hidden_channels)
+
+        # Apply root transformation to each vector component independently
+        vector_flat_root = vector.reshape(num_nodes * 3, self.hidden_channels)
+        vector_root_flat = self.lin_vector_root(vector_flat_root)
+        vector_root = vector_root_flat.view(num_nodes, 3, self.hidden_channels)
+        vector_out = vector_root + vector_agg
 
         return torch.cat([scalar_out.unsqueeze(1), vector_out], dim=1)

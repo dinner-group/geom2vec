@@ -20,7 +20,7 @@ class SPIB(nn.Module):
     beta :
         Trade-off between predictive capacity and model complexity.
     learning_rate :
-        Learning rate for the Adam optimiser.
+        Learning rate for the optimizer.
     lr_scheduler_gamma :
         Multiplicative factor for learning rate decay. ``1.0`` disables decay.
     device :

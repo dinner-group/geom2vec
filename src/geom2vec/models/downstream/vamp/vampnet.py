@@ -39,7 +39,7 @@ class VAMPNetConfig:
     long argument list of :class:`VAMPNet.__init__`.
     """
 
-    optimizer: str = "Adam"
+    optimizer: str = "AdamAtan2"
     learning_rate: float = 5e-4
     weight_decay: float = 0.0
     epsilon: float = 1e-6
@@ -89,7 +89,7 @@ class VAMPNet:
         arguments below.
     optimizer :
         Name of the optimiser to use (e.g. ``\"Adam\"``, ``\"AdamW\"``,
-        ``\"GrokFastAdamW\"``, ``\"AdamAtan2\"``).
+        ``\"GrokFastAdamW\"``, ``\"AdamAtan2\"``). Default: ``\"AdamAtan2\"``.
     device :
         Device on which to run the lobes and estimator. If ``None``, uses
         the current default PyTorch device.
@@ -119,7 +119,7 @@ class VAMPNet:
         lobe_lagged: Optional[nn.Module] = None,
         *,
         config: Optional[VAMPNetConfig] = None,
-        optimizer: str = "Adam",
+        optimizer: str = "AdamAtan2",
         device: Optional[Union[str, torch.device]] = None,
         learning_rate: float = 5e-4,
         epsilon: float = 1e-6,

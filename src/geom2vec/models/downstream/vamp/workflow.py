@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
+import re
+import warnings
 
 from geom2vec.data.features import FlatFeatureSpec, packing_features
 from .vampnet import VAMPNet, VAMPNetConfig
@@ -90,6 +93,103 @@ def _ensure_frame_weights(
     if tensor.shape[0] != frames:
         raise ValueError("frame_weights must match the number of frames in the trajectory.")
     return tensor
+
+
+def build_trajectories_from_embedding_dir(
+    embedding_dir: Union[str, Path],
+    *,
+    require_ca: bool = True,
+    dtype: torch.dtype = torch.float32,
+) -> Tuple[List[dict], List[torch.Tensor], List[torch.Tensor]]:
+    """Load graph embeddings and optional CA coordinates from a directory.
+
+    Expects embeddings saved as ``*.pt`` and CA coordinates saved as
+    ``*_ca.pt`` in the same folder (as produced by :func:`infer_mdanalysis_folder`),
+    with matching numeric suffixes (e.g. ``traj_48.pt`` and ``traj_48_ca.pt``).
+
+    Returns
+    -------
+    trajectories :
+        List of dictionaries suitable for :class:`VAMPWorkflow`, each with
+        ``\"graph_features\"`` and, when present, ``\"ca_coords\"``.
+    graph_trajectories :
+        Raw graph feature tensors in the same order.
+    ca_trajectories :
+        Raw CA coordinate tensors in the same order (may be empty if
+        ``require_ca=False`` and no CA files are found).
+    """
+
+    embedding_dir = Path(embedding_dir)
+
+    def _get_number(name: str) -> int:
+        """Extract the numeric suffix used for ordering trajectories.
+
+        For filenames like ``traj_48.pt`` or ``CLN025-0-protein-036.pt``, we
+        sort by the *last* integer in the stem so that corresponding embedding
+        and CA files are aligned.
+        """
+        matches = re.findall(r"(\d+)", name)
+        return int(matches[-1]) if matches else -1
+
+    embedding_paths = [p for p in embedding_dir.glob("*.pt") if not p.name.endswith("_ca.pt")]
+    ca_paths = list(embedding_dir.glob("*_ca.pt"))
+
+    # Build maps by logical trajectory name (stem without the optional '_ca' suffix)
+    emb_map = {p.stem: p for p in embedding_paths}
+    ca_map = {p.stem.replace("_ca", ""): p for p in ca_paths}
+
+    missing_ca = sorted(set(emb_map) - set(ca_map))
+    missing_emb = sorted(set(ca_map) - set(emb_map))
+
+    if not embedding_paths:
+        raise FileNotFoundError(f"No embeddings found in {embedding_dir}. Run the inference notebook first.")
+    if require_ca and missing_ca:
+        raise ValueError(
+            "Missing CA coordinate files for embeddings: "
+            + ", ".join(missing_ca[:5])
+            + ("..." if len(missing_ca) > 5 else "")
+        )
+    if require_ca and missing_emb:
+        raise ValueError(
+            "Found CA coordinate files without matching embeddings: "
+            + ", ".join(missing_emb[:5])
+            + ("..." if len(missing_emb) > 5 else "")
+        )
+
+    # Determine canonical ordering by the numeric suffix in the logical name.
+    common_names = sorted(set(emb_map) & set(ca_map), key=_get_number)
+    embedding_paths = [emb_map[name] for name in common_names]
+    ca_paths = [ca_map[name] for name in common_names]
+
+    graph_trajectories = [torch.load(path) for path in embedding_paths]
+    ca_trajectories: List[torch.Tensor] = [torch.load(path) for path in ca_paths] if ca_paths else []
+
+    trajectories: List[dict] = []
+    for idx, feat in enumerate(graph_trajectories):
+        if feat.dim() == 3:
+            feat = feat.unsqueeze(1)  # (frames, num_tokens, 4, H)
+
+        frames = feat.shape[0]
+        num_tokens = feat.shape[1] if feat.ndim >= 2 else 1
+        entry: dict = {"graph_features": feat}
+
+        if ca_trajectories:
+            ca = ca_trajectories[idx]
+            ca_tensor = torch.as_tensor(ca, dtype=dtype)
+            if ca_tensor.dim() == 3 and ca_tensor.shape[0] != frames:
+                raise ValueError(
+                    f"Frame mismatch between embeddings and CA coordinates for trajectory index {idx} "
+                    f"({embedding_paths[idx].name} vs {ca_paths[idx].name}): "
+                    f"{frames} feature frames vs {ca_tensor.shape[0]} CA frames. "
+                    "Please regenerate these files with a consistent inference run."
+                )
+
+            coords = _ensure_ca_coords_tensor(ca, frames=frames, num_tokens=num_tokens, dtype=dtype)
+            entry["ca_coords"] = coords
+
+        trajectories.append(entry)
+
+    return trajectories, graph_trajectories, ca_trajectories
 
 
 class _TimeLaggedDataset(Dataset):
