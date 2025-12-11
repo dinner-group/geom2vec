@@ -749,19 +749,33 @@ Foundation at: https://www.gnu.org/licenses/gpl-3.0.txt
 
 
 ----------------------------------------------------------------------
-Section 3 – Third-party dependencies
+Section 3 – Third-party code and dependencies
 ----------------------------------------------------------------------
 
-This repository depends on several third-party libraries, including
-but not limited to:
+This repository uses, and in some cases incorporates code from,
+third-party projects. In particular:
 
   - PyTorch Geometric (MIT License)
-  - TorchMD-Net (MIT License)
+    - Used as a runtime dependency.
+    - Its source code is not generally distributed as part of this
+      repository, except for any small snippets that may be included
+      and explicitly marked as adapted from PyTorch Geometric. Those
+      snippets are covered by the MIT License text in Section 1.
 
-These dependencies are not distributed as part of this repository; they
-are installed separately (e.g., via pip or conda). Use of those
-libraries is governed by their respective licenses, which can be found
-in their own repositories and distributions.
+  - TorchMD-Net (MIT License)
+    - Used as a runtime dependency.
+    - In addition, some modules in this repository contain code
+      adapted from TorchMD-Net. These files are annotated in their
+      headers with a notice such as:
+        "Portions of this file are adapted from TorchMD-Net (MIT
+         license). See the LICENSE file in the repository root for
+         details."
+      For those portions of the code, the original TorchMD-Net
+      copyright and MIT license apply in addition to the general
+      MIT terms in Section 1.
+
+The full text of the MIT License governing these third-party
+contributions is included in Section 1 of this file.
 
 ----------------------------------------------------------------------
 Practical notes

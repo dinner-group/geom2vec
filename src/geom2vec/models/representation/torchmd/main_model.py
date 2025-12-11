@@ -1,3 +1,6 @@
+# Portions of this file are adapted from TorchMD-Net (MIT license), https://github.com/torchmd/torchmd-net.
+# See the LICENSE file in the repository root for details.
+
 import argparse
 import re
 import warnings

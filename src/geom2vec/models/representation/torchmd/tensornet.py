@@ -1,6 +1,8 @@
 # Copyright Universitat Pompeu Fabra 2020-2023  https://www.compscience.org
 # Distributed under the MIT License.
 # (See accompanying file README.md file or copy at http://opensource.org/licenses/MIT)
+# Portions of this file are adapted from TorchMD-Net (MIT license), https://github.com/torchmd/torchmd-net.
+# See the LICENSE file in the repository root for details.
 
 from typing import Optional, Tuple
 
