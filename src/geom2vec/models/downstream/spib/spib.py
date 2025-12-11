@@ -364,7 +364,7 @@ class SPIBModel(SPIBVAE):
         test_dataloader = torch.utils.data.DataLoader(
             test_dataset,
             sampler=torch.utils.data.BatchSampler(
-                torch.utils.data.SequentialSampler(test_dataset), batch_size, False),
+                torch.utils.data.RandomSampler(test_dataset), batch_size, False),
             batch_size=None)
         return train_dataloader, test_dataloader
 

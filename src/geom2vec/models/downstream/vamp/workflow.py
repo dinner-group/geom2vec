@@ -611,7 +611,7 @@ class VAMPWorkflow:
         )
         self._valid_dataset, self._valid_loader = self._build_loader(
             self._valid_sequences,
-            shuffle=False,
+            shuffle=self._train_shuffle,
         )
 
         if self._train_loader is None:
