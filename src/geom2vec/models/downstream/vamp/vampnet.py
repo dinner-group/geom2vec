@@ -1,3 +1,13 @@
+# geom2vec VAMPNet implementation
+#
+# This file includes code adapted from xuhuihuang/graphvampnets
+# (https://github.com/xuhuihuang/graphvampnets), which is licensed
+# under the GNU General Public License v3.0 (GPL-3.0).
+#
+# Accordingly, this file and the src/geom2vec/models/downstream/vamp/
+# directory are distributed under the terms of GPL-3.0.
+# See LICENSE-GPL-3.0 in the repository root for details.
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence, Tuple, Union

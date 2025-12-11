@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .plotting import ContourPlot2D
-
-
 def _torch_guard(symbol: str, error: ModuleNotFoundError) -> Callable[..., Any]:
     def _raiser(*_args: Any, **_kwargs: Any) -> None:
         raise ModuleNotFoundError(
@@ -13,7 +10,6 @@ def _torch_guard(symbol: str, error: ModuleNotFoundError) -> Callable[..., Any]:
         ) from error
 
     return _raiser
-
 
 try:
     from .vampnet import VAMPNet as _VAMPNet
@@ -27,4 +23,4 @@ else:
     VAMPWorkflow = _VAMPWorkflow
     BiasedVAMPWorkflow = _BiasedVAMPWorkflow
 
-__all__ = ["VAMPNet", "VAMPWorkflow", "BiasedVAMPWorkflow", "ContourPlot2D"]
+__all__ = ["VAMPNet", "VAMPWorkflow", "BiasedVAMPWorkflow"]

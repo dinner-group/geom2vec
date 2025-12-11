@@ -1,3 +1,11 @@
+"""
+SPIB: A deep learning-based framework for dimension reduction and MSM of MD trajectories.
+Adapted from Code maintained by Dedi (https://github.com/wangdedi1997/spib/blob/main/spib/spib.py) .
+
+Read and cite the following when using this method:
+https://aip.scitation.org/doi/abs/10.1063/5.0038198
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

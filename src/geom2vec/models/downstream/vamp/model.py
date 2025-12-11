@@ -1,3 +1,13 @@
+# geom2vec VAMPNet implementation
+#
+# This file includes code adapted from xuhuihuang/graphvampnets
+# (https://github.com/xuhuihuang/graphvampnets), which is licensed
+# under the GNU General Public License v3.0 (GPL-3.0).
+#
+# Accordingly, this file and the src/geom2vec/models/downstream/vamp/
+# directory are distributed under the terms of GPL-3.0.
+# See LICENSE-GPL-3.0 in the repository root for details.
+
 from typing import List, Optional, Tuple, Union
 
 import numpy as np
@@ -5,7 +15,6 @@ import torch
 from tqdm import tqdm
 
 from .ops import estimate_koopman_matrix
-from .tensor import map_data_to_tensor
 
 
 def _default_ca_coords_from_features(graph_features: torch.Tensor, dtype: torch.dtype):
@@ -108,8 +117,17 @@ class BaseVAMPNet_Model:
             self._lobe_lagged.eval()
             net = self._lobe_lagged
 
+        if not isinstance(data, (list, tuple)):
+            data_iterable = [data]
+        else:
+            data_iterable = data
         output = []
-        for data_tensor in map_data_to_tensor(data, device=self._device, dtype=self._numpy_dtype):
+        for item in data_iterable:
+            if isinstance(item, torch.Tensor):
+                data_tensor = item
+            else:
+                np_array = np.array(item, dtype=self._numpy_dtype, copy=True)
+                data_tensor = torch.from_numpy(np_array)
             data_tensor = data_tensor.to(device=self._device, dtype=self._dtype)
             batch_list = []
             for i in tqdm(range(0, data_tensor.shape[0], batch_size), leave=False, desc="transform"):
