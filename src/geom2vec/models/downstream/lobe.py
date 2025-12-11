@@ -7,6 +7,7 @@ from torch.nn import Dropout
 from geom2vec.nn import EquivariantAttentionBlock, EquivariantSelfAttention
 from geom2vec.nn.equivariant import (
     EquivariantGraphConv,
+    EquivariantGraphConvCheap,
     EquivariantScalar,
     EquiLinear,
     EquivariantTokenMerger,
@@ -41,7 +42,6 @@ class ScalarMerger(nn.Module):
             num_tokens += pad_size
 
         x = x.reshape(batch_size, num_tokens // self.window_size, self.window_size * hidden_channels)
-        # x = x.mean(dim=2)
         x = self.projection(x)
         x = self.normalize(x)
         return x
@@ -104,9 +104,10 @@ class Lobe(nn.Module):
         mlp_dropout: float = 0.0,
         mlp_out_activation: Optional[nn.Module] = None,
         device: torch.device = torch.device("cpu"),
-        equi_rep: bool = False,
+        equi_rep: bool = True,
         merger: bool = False,
-        merger_window: int = 6,
+        merger_window: int = 1,
+        cheap_gnn: bool = True,
         num_mixer_layers: int = 4,
         expansion_factor: int = 2,
         nhead: int = 8,
@@ -117,6 +118,7 @@ class Lobe(nn.Module):
         vec_mixing: str = "add",
         qk_conv: bool = True,
         qk_conv_len: int = 4,
+        chiral: bool = False,
         ):
         super().__init__()
 
@@ -136,7 +138,10 @@ class Lobe(nn.Module):
             input_channels, hidden_channels
         )
 
-        self.gnn_layer = EquivariantGraphConv(hidden_channels)
+        if cheap_gnn:
+            self.gnn_layer = EquivariantGraphConvCheap(hidden_channels)
+        else:
+            self.gnn_layer = EquivariantGraphConv(hidden_channels, chiral=chiral)
         self.pos_encoding = PositionalEncoding(d_model=hidden_channels, max_len=8192)
         self.merger_window: Optional[int] = merger_window if merger else None
         self.mixer_dropout: Optional[Dropout] = None
@@ -146,7 +151,9 @@ class Lobe(nn.Module):
             if not equi_rep:
                 self.merger = ScalarMerger(window_size=merger_window, hidden_channels=hidden_channels)
             else:
-                self.merger = EquivariantTokenMerger(window_size=merger_window, hidden_channels=hidden_channels)
+                self.merger = EquivariantTokenMerger(window_size=merger_window, 
+                                                     hidden_channels=hidden_channels,
+                                                    )
 
             self.num_tokens = (num_tokens + merger_window - 1) // merger_window
 
@@ -174,7 +181,8 @@ class Lobe(nn.Module):
                                                                 num_heads=nhead,
                                                                 vector_mixing=vec_mixing, 
                                                                 qk_conv=qk_conv,
-                                                                qk_conv_len=qk_conv_len)
+                                                                qk_conv_len=qk_conv_len,
+                                                                chiral=chiral)
                 else:
                     try:
                         from geom2vec.nn.triton.eqsdpa.attention import EquivariantSelfAttentionTriton
@@ -186,7 +194,8 @@ class Lobe(nn.Module):
                                                                       num_heads=nhead,
                                                                       vector_mixing=vec_mixing, 
                                                                       qk_conv=qk_conv,
-                                                                      qk_conv_len=qk_conv_len)
+                                                                      qk_conv_len=qk_conv_len,
+                                                                      chiral=chiral)
 
                 blocks.append(
                     EquivariantAttentionBlock(

@@ -307,7 +307,7 @@ class EquivariantTokenMerger(nn.Module):
         return torch.cat([scalar.unsqueeze(2), vector], dim=2)
 
 
-class EquivariantGraphConv(nn.Module):
+class EquivariantGraphConvCheap(nn.Module):
     def __init__(self, hidden_channels: int, aggr: str = "add"):
         super().__init__()
         self.hidden_channels = hidden_channels
@@ -338,7 +338,6 @@ class EquivariantGraphConv(nn.Module):
         vector_messages = vector_messages_flat.view(col.size(0), 3, self.hidden_channels)
 
         scalar_agg = scatter(scalar_messages, row, dim=0, dim_size=scalar.size(0), reduce=self.aggr)
-        # For vectors, scatter operates on the flattened version
         vector_messages_for_scatter = vector_messages.reshape(col.size(0), 3 * self.hidden_channels)
         vector_agg_flat = scatter(vector_messages_for_scatter, row, dim=0, dim_size=num_nodes, reduce=self.aggr)
         vector_agg = vector_agg_flat.view(num_nodes, 3, self.hidden_channels)
@@ -350,5 +349,196 @@ class EquivariantGraphConv(nn.Module):
         vector_root_flat = self.lin_vector_root(vector_flat_root)
         vector_root = vector_root_flat.view(num_nodes, 3, self.hidden_channels)
         vector_out = vector_root + vector_agg
+
+        return torch.cat([scalar_out.unsqueeze(1), vector_out], dim=1)
+
+class EquivariantGraphConv(nn.Module):
+    """
+    Equivariant message-passing conv with scalar+vector features and
+    geometry-aware gating on actual graph connectivity.
+
+    Input:
+        x: (N, 4, H)  where:
+           x[:, 0, :]   scalar features
+           x[:, 1:, :]  vector features (3, H)
+        edge_index: (2, E)  with row, col indices (messages from col -> row)
+
+    Geometry:
+        - Vector channels (H) are linearly compressed to a small
+          'geom_channels' subspace (G).
+        - All 3D geometry (angles, dihedrals, chirality) is computed
+          in this subspace (much cheaper than full H).
+        - Per-edge scalar gates are produced in geom space and expanded
+          back to H for scalar and vector messages.
+
+    Args:
+        hidden_channels:  H, scalar/vector channel dimension.
+        aggr:             'add' / 'mean' / 'max' for message aggregation.
+        eps:              numerical epsilon.
+        chiral:           if True, use signed dihedral (pseudoscalar),
+                          breaking reflection equivariance (SO(3) only).
+        geom_channels:    G, size of geometry subspace (e.g. 8 or 16). If None,
+                          defaults to 1 (full pooling).
+        mlp_hidden:       hidden size for edge MLPs.
+    """
+
+    def __init__(
+        self,
+        hidden_channels: int,
+        aggr: str = "add",
+        eps: float = 1e-8,
+        chiral: bool = False,
+        geom_channels: int = 16,
+        mlp_hidden: int = 16,
+    ):
+        super().__init__()
+        self.hidden_channels = hidden_channels
+        self.aggr = aggr
+        self.eps = eps
+        self.chiral = chiral
+        self.geom_channels = geom_channels or 1  # G
+
+        H = hidden_channels
+        G = self.geom_channels
+
+        self.lin_scalar_rel = nn.Linear(H, H, bias=False)
+        self.lin_scalar_root = nn.Linear(H, H)
+
+        self.lin_vector_rel = nn.Linear(H, H, bias=False)
+        self.lin_vector_root = nn.Linear(H, H, bias=False)
+
+        self.vec_to_geom = nn.Linear(H, G, bias=False)
+
+        in_dim = 3 if chiral else 2
+        mlp_hidden = max(mlp_hidden, 4)
+
+        self.edge_mlp_s = nn.Sequential(
+            nn.Linear(in_dim, mlp_hidden),
+            nn.SiLU(),
+            nn.Linear(mlp_hidden, 1),
+        )
+        self.edge_mlp_v = nn.Sequential(
+            nn.Linear(in_dim, mlp_hidden),
+            nn.SiLU(),
+            nn.Linear(mlp_hidden, 1),
+        )
+
+        self.expand_s = nn.Linear(G, H)
+        self.expand_v = nn.Linear(G, H)
+
+
+    def forward(self, x: Tensor, edge_index: Tensor) -> Tensor:
+        if x.dim() != 3 or x.size(1) != 4:
+            raise ValueError("EquivariantGraphConv expects input of shape (N, 4, H).")
+
+        N, _, H = x.shape
+        if H != self.hidden_channels:
+            raise ValueError(
+                f"hidden_channels mismatch: got {H}, expected {self.hidden_channels}"
+            )
+
+        scalar = x[:, 0, :]     # (N, H)
+        vector = x[:, 1:, :]    # (N, 3, H)
+
+        if edge_index.numel() == 0:
+            # No edges: just apply root transforms
+            scalar_out = self.lin_scalar_root(scalar)
+            vec_flat = vector.reshape(N * 3, H)
+            vec_root_flat = self.lin_vector_root(vec_flat)
+            vector_out = vec_root_flat.view(N, 3, H)
+            return torch.cat([scalar_out.unsqueeze(1), vector_out], dim=1)
+
+        row, col = edge_index    # messages go col -> row
+        E = col.size(0)
+        G = self.geom_channels
+        eps = self.eps
+
+        vec_flat = vector.reshape(N * 3, H)         # (N*3, H)
+        vec_geom_flat = self.vec_to_geom(vec_flat)  # (N*3, G)
+        vec_geom = vec_geom_flat.view(N, 3, G)      # (N, 3, G)
+
+        v_src = vec_geom[col]                       # (E, 3, G)
+        v_dst = vec_geom[row]                       # (E, 3, G)
+        b_ij = v_dst - v_src                        # (E, 3, G)
+
+        norm_b = b_ij.norm(dim=1, keepdim=True).clamp_min(eps)  # (E,1,G)
+        e_ij = b_ij / norm_b                                  # (E,3,G) unit-ish
+
+        e_flat = e_ij.reshape(E, 3 * G)                       # (E,3G)
+        u_node_flat = scatter(e_flat, col, dim=0, dim_size=N, reduce="add")
+        u_node = u_node_flat.view(N, 3, G)                    # (N,3,G)
+
+        u_i = u_node[col]                                     # (E,3,G)
+        u_j = u_node[row]                                     # (E,3,G)
+
+        dot_ui_e = (u_i * e_ij).sum(dim=1)                    # (E,G)
+        norm_ui = u_i.norm(dim=1).clamp_min(eps)              # (E,G)
+        ang_ij = (dot_ui_e / norm_ui).clamp(-1.0, 1.0)        # (E,G)
+
+        proj_i = dot_ui_e.unsqueeze(1) * e_ij                 # (E,3,G)
+        dot_uj_e = (u_j * e_ij).sum(dim=1)                    # (E,G)
+        proj_j = dot_uj_e.unsqueeze(1) * e_ij                 # (E,3,G)
+
+        u_i_perp = u_i - proj_i                               # (E,3,G)
+        u_j_perp = u_j - proj_j                               # (E,3,G)
+
+        dot_perp = (u_i_perp * u_j_perp).sum(dim=1)           # (E,G)
+        norm_perp_i = u_i_perp.norm(dim=1).clamp_min(eps)     # (E,G)
+        norm_perp_j = u_j_perp.norm(dim=1).clamp_min(eps)     # (E,G)
+
+        denom_cos = (norm_perp_i * norm_perp_j).clamp_min(eps)
+        dih_cos = (dot_perp / denom_cos).clamp(-1.0, 1.0)     # (E,G)
+
+        if self.chiral:
+            cross_ij = torch.cross(u_i_perp, u_j_perp, dim=1) # (E,3,G)
+            triple = (cross_ij * e_ij).sum(dim=1)             # (E,G)
+
+            norm_e = e_ij.norm(dim=1).clamp_min(eps)          # (E,G)
+            denom_sin = (norm_perp_i * norm_perp_j * norm_e).clamp_min(eps)
+            dih_sin = (triple / denom_sin).clamp(-1.0, 1.0)   # (E,G)
+
+            feats = torch.stack([ang_ij, dih_cos, dih_sin], dim=-1)  # (E,G,3)
+        else:
+            feats = torch.stack([ang_ij, dih_cos], dim=-1)           # (E,G,2)
+
+        E_, G_, D = feats.shape
+        assert E_ == E and G_ == G
+        feats_flat = feats.view(E * G, D)                     # (E*G,D)
+
+        g_s_geom = self.edge_mlp_s(feats_flat).view(E, G)     # (E,G)
+        g_v_geom = self.edge_mlp_v(feats_flat).view(E, G)     # (E,G)
+
+        g_s_full_logits = self.expand_s(g_s_geom)             # (E,H)
+        g_v_full_logits = self.expand_v(g_v_geom)             # (E,H)
+
+        g_s = torch.sigmoid(g_s_full_logits)                  # (E,H)
+        g_v = torch.sigmoid(g_v_full_logits)                  # (E,H)
+
+        scalar_rel = self.lin_scalar_rel(scalar[col])         # (E,H)
+        scalar_messages = g_s * scalar_rel                    # (E,H)
+
+        scalar_agg = scatter(
+            scalar_messages, row, dim=0, dim_size=N, reduce=self.aggr
+        )                                                     # (N,H)
+
+        vector_flat = vector[col].reshape(E * 3, H)           # (E*3,H)
+        vector_rel_flat = self.lin_vector_rel(vector_flat)    # (E*3,H)
+        vector_rel = vector_rel_flat.view(E, 3, H)            # (E,3,H)
+
+        vector_messages = g_v.unsqueeze(1) * vector_rel       # (E,3,H)
+
+        vector_messages_flat = vector_messages.reshape(E, 3 * H)
+        vector_agg_flat = scatter(
+            vector_messages_flat, row, dim=0, dim_size=N, reduce=self.aggr
+        )                                                     # (N,3H)
+        vector_agg = vector_agg_flat.view(N, 3, H)            # (N,3,H)
+
+        scalar_out = self.lin_scalar_root(scalar) + scalar_agg   # (N,H)
+
+        vec_flat_root = vector.reshape(N * 3, H)
+        vec_root_flat = self.lin_vector_root(vec_flat_root)
+        vector_root = vec_root_flat.view(N, 3, H)                # (N,3,H)
+
+        vector_out = vector_root + vector_agg                    # (N,3,H)
 
         return torch.cat([scalar_out.unsqueeze(1), vector_out], dim=1)

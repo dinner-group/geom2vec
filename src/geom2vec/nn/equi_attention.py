@@ -18,6 +18,7 @@ class EquivariantSelfAttention(nn.Module):
         vector_gating: bool = True,
         qk_conv: bool = False,
         qk_conv_len: int = 3,
+        chiral: bool = False,
     ) -> None:
         super().__init__()
         if vector_mixing not in {"add", "concat"}:
@@ -36,6 +37,7 @@ class EquivariantSelfAttention(nn.Module):
             self.local_qk_conv = LocalQKConv(
                 hidden_channels=self.hidden_channels,
                 window_size=self.qk_conv_len,
+                chiral=chiral,
             )
             self.v_proj = nn.Linear(self.hidden_channels, self.hidden_channels)
         else:

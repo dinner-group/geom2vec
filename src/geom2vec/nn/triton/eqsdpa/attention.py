@@ -13,11 +13,7 @@ from .backward_kernel import (
 )
 from ...local_conv import LocalQKConv
 
-# disable TF32 for Triton kernels
 torch.backends.cuda.matmul.allow_tf32 = True
-
-# triton disable TF32 for all kernel
-
 
 class EquivariantSelfAttentionTritonFunction(torch.autograd.Function):
     """
@@ -25,33 +21,28 @@ class EquivariantSelfAttentionTritonFunction(torch.autograd.Function):
     two fused backward kernels (dQ   and  dK/dV).
     """
 
-    # ─────────────────────────── forward ────────────────────────────────
     @staticmethod
     def forward(ctx, q, k, v, vec_v_unpadded, qk_scale):
-        # Triton forward now returns   O_s,  O_v,  M,  L,  O_v_padded
         O_s, O_v, M, L, O_v_pad = fused_attention_forward(
             q, k, v, vec_v_unpadded
         )
 
-        # pad vec_v so backward kernels always see power-of-2 vector dim
         V_orig = vec_v_unpadded.shape[-1]
-        V_pad  = O_v_pad.shape[-1]                  # already next_pow2
+        V_pad  = O_v_pad.shape[-1]                 
         vec_v_pad = (
             F.pad(vec_v_unpadded, (0, V_pad - V_orig))
             if V_pad != V_orig else vec_v_unpadded
         ).contiguous()
 
-        # save everything required by backward
         ctx.save_for_backward(
-            q, k, v, vec_v_pad,          # inputs (vec_v is padded)
+            q, k, v, vec_v_pad,         
             M.contiguous(), L.contiguous(),
             O_s.contiguous(), O_v_pad.contiguous()
         )
         ctx.qk_scale      = qk_scale
         ctx.orig_vec_dim  = V_orig
-        return O_s, O_v                           # UNPADDED vector output
-
-    # ─────────────────────────── backward ───────────────────────────────
+        return O_s, O_v                         
+    
     @staticmethod
     def backward(ctx, dO_s, dO_v_unpadded):
         # unpack saved tensors
@@ -59,15 +50,12 @@ class EquivariantSelfAttentionTritonFunction(torch.autograd.Function):
          M, L,
          O_s, O_v_pad) = ctx.saved_tensors
 
-        # pad dO_v to the same power-of-2 width as vec_v_pad
         V_pad  = vec_v_pad.shape[-1]
         pad_sz = V_pad - ctx.orig_vec_dim
         dO_v_pad = (
             F.pad(dO_v_unpadded, (0, pad_sz))
             if pad_sz else dO_v_unpadded
         ).contiguous()
-
-        # ── Delta (row-wise ⟨O, dO⟩) ───────────────────────────────────
         Delta = torch.empty_like(M, dtype=torch.float32)
         launch_preprocess_kernel(O_s, O_v_pad, dO_s, dO_v_pad, Delta)
 
@@ -76,8 +64,6 @@ class EquivariantSelfAttentionTritonFunction(torch.autograd.Function):
         dk  = torch.empty_like(k)
         dv  = torch.empty_like(v)
         dvec_pad = torch.empty_like(vec_v_pad)
-
-        # ── dK & dV ─────────────────────────────────────────────────────
         launch_dkdv_calculation_kernel(
             q, k, v, vec_v_pad,
             dO_s, dO_v_pad,
@@ -86,8 +72,6 @@ class EquivariantSelfAttentionTritonFunction(torch.autograd.Function):
             sm_scale=ctx.qk_scale,
             DK_out=dk, DV_s_out=dv, DV_v_out=dvec_pad
         )
-
-        # ── dQ ──────────────────────────────────────────────────────────
         launch_dq_calculation_kernel(
             q, k, v, vec_v_pad,
             dO_s, dO_v_pad,
@@ -112,9 +96,8 @@ class EquivariantSelfAttentionTriton(nn.Module):
 
     def __init__(self, hidden_channels, num_heads, window_size=None,
                  vector_mixing='add', vector_gating=True, qk_conv: bool = False,
-                 qk_conv_len: int = 3):
+                 qk_conv_len: int = 3, chiral: bool = False):
         super().__init__()
-        # --- Initialize parameters exactly like the original class ---
         assert vector_mixing in ['add', 'concat'], "vector_mixing must be either 'add' or 'concat'"
         assert hidden_channels % num_heads == 0, "hidden_channels must be divisible by num_heads"
 
@@ -133,6 +116,7 @@ class EquivariantSelfAttentionTriton(nn.Module):
             self.local_qk_conv = LocalQKConv(
                 hidden_channels=self.hidden_channels,
                 window_size=self.qk_conv_len,
+                chiral=chiral,
             )
             # v_proj stays linear
             self.v_proj = nn.Linear(self.hidden_channels, self.hidden_channels)
@@ -165,7 +149,6 @@ class EquivariantSelfAttentionTriton(nn.Module):
         assert H == self.hidden_channels
         assert self.window_size is None, "Triton kernel only supports full attention"
 
-        # --- Preprocessing (Identical to original) ---
         x_scalar = x[:, :, 0].contiguous()
         vec = x[:, :, 1:].contiguous()
         vec_res = vec.clone()
@@ -182,7 +165,6 @@ class EquivariantSelfAttentionTriton(nn.Module):
         k = k.view(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3).contiguous() # (B, H, N, Dh)
         v = v.view(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3).contiguous() # (B, H, N, Dh)
 
-        # Vector processing (Identical to original)
         vec_proj_out = self.vec_proj(vec)
         vec1, vec2 = torch.split(vec_proj_out, self.hidden_channels, dim=-1)
         vec_dot = (vec1 * vec2).sum(dim=-2).contiguous()
@@ -194,37 +176,15 @@ class EquivariantSelfAttentionTriton(nn.Module):
         vec_flat = vec_flat.permute(0, 3, 1, 2, 4) # (B, H, N, 3, Dh)
         vec_v_kernel = vec_flat.contiguous().view(B, self.num_heads, N, 3 * self.head_dim) # (B, H, N, 3*Dh)
 
-        # --- Call Fused Triton Kernel ---
-        # fused_attention_forward expects (B, H, N, Dim) inputs
-        # Outputs: out_scalar (B, H, N, Dh), out_vector (B, H, N, 3*Dh)
-        # if mask is not None:
-        #      print("WARNING: Mask input provided to EquivariantSelfAttentionTriton, "
-        #            "but the Triton kernel does not currently support attention masking. "
-        #            "Only final output masking will be applied.")
-
-        # Ensure inputs are contiguous if the kernel wrapper expects them
-        # (Our wrapper currently calculates strides assuming contiguous)
-        # out_scalar, out_vector = fused_attention_forward(
-        #     q.contiguous(), k.contiguous(), v.contiguous(), vec_v_kernel.contiguous()
-        # )
-
         # apply the EquivariantSelfAttentionTritonFunction
         qk_scale = 1.0 / math.sqrt(self.head_dim)
         out_scalar, out_vector = EquivariantSelfAttentionTritonFunction.apply(
             q.contiguous(), k.contiguous(), v.contiguous(), vec_v_kernel.contiguous(),
             qk_scale
         )
-
-        # --- Map Kernel Outputs ---
-        # out_scalar is the aggregated scalar value, equivalent to x_agg
-        # Shape: (B, H, N, Dh)
         x_agg = out_scalar
 
-        # out_vector is the aggregated vector value, equivalent to vec_aggr
-        # Shape: (B, H, N, 3*Dh)
         vec_aggr = out_vector
-
-        # --- Postprocessing (Identical to original, using x_agg and vec_aggr) ---
         x_out = x_agg.permute(0, 2, 1, 3).contiguous().view(B, N, H) # (B, N, H)
         vec_aggr = vec_aggr.view(B, self.num_heads, N, 3, self.head_dim) \
                         .permute(0, 2, 3, 1, 4) \
