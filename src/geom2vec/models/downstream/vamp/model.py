@@ -217,11 +217,23 @@ class VAMPNet_Estimator:
             return self._score
 
     def fit(self, data, sample_weights: Optional[torch.Tensor] = None):
-        assert len(data) == 2
+        if len(data) not in {2, 3}:
+            raise ValueError(
+                "data must be (x_t, x_tlag) or (x_t, x_tlag, ind_stop)."
+            )
+
+        ind_stop = None
+        if len(data) == 3:
+            ind_stop = data[2]
+            if sample_weights is not None:
+                raise ValueError(
+                    "sample_weights are not supported together with stopping indicators."
+                )
 
         koopman = estimate_koopman_matrix(
             data[0],
             data[1],
+            ind_stop=ind_stop,
             epsilon=self._epsilon,
             mode=self._mode,
             symmetrized=self._symmetrized,
@@ -236,6 +248,7 @@ class VAMPNet_Estimator:
             koopman, score = estimate_koopman_matrix(
                 data[0],
                 data[1],
+                ind_stop=ind_stop,
                 epsilon=self._epsilon,
                 mode=self._mode,
                 symmetrized=self._symmetrized,

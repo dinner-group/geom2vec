@@ -195,6 +195,59 @@ summary = infer_mdanalysis_folder(
 )
 ```
 
+#### Optional: implicit solvent/lipid environment features (mean-field)
+
+When working with trajectories that include water and/or membrane lipids, you can compute **implicit**
+environment descriptors (no explicit solvent nodes) and save them alongside the embeddings.
+
+```python
+from geom2vec.data import EnvironmentConfig, infer_mdanalysis_folder
+
+env = EnvironmentConfig(
+    enabled=True,
+    # water
+    compute_water=True,
+    compute_water_vectors=True,
+    water_selection_mda="resname SOL and name O",
+    # cutoff + bins (Å)
+    r_max_A=8.0,
+    n_rbf=8,
+    rbf_width_A=0.75,
+    # lipids (optional; set selections for your force field)
+    compute_lipids=False,
+    compute_membrane_frame=False,
+)
+
+summary = infer_mdanalysis_folder(
+    model=model,
+    topology_file="topology.pdb",
+    trajectory_folder="trajectories/",
+    output_dir="embeddings/",
+    stride=100,
+    # important: keep residue tokens aligned to Cα atoms
+    selection="protein and prop mass > 1.5",
+    env_config=env,
+)
+```
+
+This produces additional files per trajectory:
+- `*_env_scalar.pt` (frames, tokens, C_env_s)
+- `*_env_vector.pt` (frames, tokens, 3, C_env_v) when vector env features are enabled
+- `*_env_meta.json` (reproducibility metadata)
+
+To fuse environment features into the `(frames, tokens, 4, C)` Geom2Vec token tensor:
+
+```python
+import torch
+from geom2vec.models.downstream import fuse_env_features
+
+graph = torch.load("embeddings/traj_0.pt")
+env_scalar = torch.load("embeddings/traj_0_env_scalar.pt")
+env_vector = torch.load("embeddings/traj_0_env_vector.pt")
+
+graph_aug = fuse_env_features(graph, env_scalar=env_scalar, env_vector=env_vector)
+```
+
 ### 3. Training VAMPNet on Embeddings
 
 ```python
@@ -333,6 +386,8 @@ See the `examples/` folder for complete tutorials:
 - `2_vamp_workflow.ipynb`: VAMPNet training workflow
 - `3_vamp_spib_workflow.ipynb`: Combined VAMPNet + SPIB pipeline
 - `4_biased_vamp_workflow.ipynb`: Biased VAMP for reweighted dynamics
+- `5_vqmsm_hmm_workflow.ipynb`: VQ-MSM + HMM workflow
+- `6_stopvamp_workflow.ipynb`: StopVAMPNet workflow with stopping-time boundaries
 
 ## Development and contact
 

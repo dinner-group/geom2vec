@@ -21,6 +21,13 @@ else:
     Lobe = _Lobe
 
 try:
+    from .env_fusion import fuse_env_features as _fuse_env_features
+except ModuleNotFoundError as _torch_error:
+    fuse_env_features = _torch_guard("geom2vec.models.downstream.fuse_env_features", _torch_error)
+else:
+    fuse_env_features = _fuse_env_features
+
+try:
     from .spib import SPIB as _SPIB, SPIBVAE as _SPIBVAE, SPIBModel as _SPIBModel
 except ModuleNotFoundError as _torch_error:
     SPIB = _torch_guard("geom2vec.models.downstream.SPIB", _torch_error)
@@ -34,24 +41,33 @@ else:
 try:
     from .vamp import (
         VAMPNet as _VAMPNet,
+        StopVAMPNet as _StopVAMPNet,
         VAMPWorkflow as _VAMPWorkflow,
+        StopVAMPWorkflow as _StopVAMPWorkflow,
         BiasedVAMPWorkflow as _BiasedVAMPWorkflow,
     )
 except ModuleNotFoundError as _torch_error:
     VAMPNet = _torch_guard("geom2vec.models.downstream.VAMPNet", _torch_error)
+    StopVAMPNet = _torch_guard("geom2vec.models.downstream.StopVAMPNet", _torch_error)
     VAMPWorkflow = _torch_guard("geom2vec.models.downstream.VAMPWorkflow", _torch_error)
+    StopVAMPWorkflow = _torch_guard("geom2vec.models.downstream.StopVAMPWorkflow", _torch_error)
     BiasedVAMPWorkflow = _torch_guard("geom2vec.models.downstream.BiasedVAMPWorkflow", _torch_error)
 else:
     VAMPNet = _VAMPNet
+    StopVAMPNet = _StopVAMPNet
     VAMPWorkflow = _VAMPWorkflow
+    StopVAMPWorkflow = _StopVAMPWorkflow
     BiasedVAMPWorkflow = _BiasedVAMPWorkflow
 
 __all__ = [
     "Lobe",
+    "fuse_env_features",
     "SPIB",
     "SPIBVAE",
     "SPIBModel",
     "VAMPNet",
+    "StopVAMPNet",
     "VAMPWorkflow",
+    "StopVAMPWorkflow",
     "BiasedVAMPWorkflow",
 ]

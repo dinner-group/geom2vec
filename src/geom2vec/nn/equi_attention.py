@@ -62,6 +62,7 @@ class EquivariantSelfAttention(nn.Module):
         self,
         x: Tensor,
         mask: Optional[Tensor] = None,
+        attn_bias: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Optional[Tensor]]:
         if x.dim() != 4 or x.size(2) != 4:
             raise ValueError("Expected input of shape (B, N, 4, H)")
@@ -98,6 +99,8 @@ class EquivariantSelfAttention(nn.Module):
         vec_flat = vec_flat.view(B, self.num_heads, N, 3 * self.head_dim)
 
         if self.window_size is not None:
+            if attn_bias is not None:
+                raise NotImplementedError("attn_bias is not supported for windowed attention.")
             win_len = 2 * self.window_size + 1
             q_local = q.reshape(B * self.num_heads, N, self.head_dim)
             k_local = k.reshape(B * self.num_heads, N, self.head_dim)
@@ -127,6 +130,17 @@ class EquivariantSelfAttention(nn.Module):
             vec_aggr = vec_attn_local.view(B, self.num_heads, N, 3 * self.head_dim)
         else:
             attn_scores = torch.matmul(q, k.transpose(-2, -1)) * scale_factor
+            if attn_bias is not None:
+                if attn_bias.dim() == 3:
+                    if attn_bias.shape != (B, N, N):
+                        raise ValueError("attn_bias must have shape (B, N, N) when 3D")
+                    attn_scores = attn_scores + attn_bias.to(attn_scores.dtype).unsqueeze(1)
+                elif attn_bias.dim() == 4:
+                    if attn_bias.shape != (B, self.num_heads, N, N):
+                        raise ValueError("attn_bias must have shape (B, heads, N, N) when 4D")
+                    attn_scores = attn_scores + attn_bias.to(attn_scores.dtype)
+                else:
+                    raise ValueError("attn_bias must have shape (B,N,N) or (B,heads,N,N)")
             if mask is not None:
                 attn_scores = attn_scores.masked_fill(
                     ~mask.unsqueeze(1).unsqueeze(2), float("-inf")
@@ -168,4 +182,3 @@ class EquivariantSelfAttention(nn.Module):
             x_final = x_final * mask.unsqueeze(-1).unsqueeze(-1).float()
 
         return x_final, attn_weights
-

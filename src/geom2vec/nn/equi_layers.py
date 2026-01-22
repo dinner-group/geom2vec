@@ -115,9 +115,9 @@ class EquivariantAttentionBlock(nn.Module):
         self.dropout = EquivariantDropout(dropout)
         self.ffn = EquivariantGatedFeedForward(hidden_channels, hidden_channels, hidden_channels, dropout=dropout)
 
-    def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, mask: Optional[Tensor] = None, attn_bias: Optional[Tensor] = None) -> Tensor:
         residual = x
-        attn_out, _ = self.attention(self.norm1(x), mask=mask)
+        attn_out, _ = self.attention(self.norm1(x), mask=mask, attn_bias=attn_bias)
         attn_out = self.dropout(attn_out)
         x = residual + attn_out
 

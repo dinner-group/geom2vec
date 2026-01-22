@@ -13,14 +13,23 @@ def _torch_guard(symbol: str, error: ModuleNotFoundError) -> Callable[..., Any]:
 
 try:
     from .vampnet import VAMPNet as _VAMPNet
-    from .workflow import VAMPWorkflow as _VAMPWorkflow, BiasedVAMPWorkflow as _BiasedVAMPWorkflow
+    from .stopvampnet import StopVAMPNet as _StopVAMPNet
+    from .workflow import (
+        VAMPWorkflow as _VAMPWorkflow,
+        StopVAMPWorkflow as _StopVAMPWorkflow,
+        BiasedVAMPWorkflow as _BiasedVAMPWorkflow,
+    )
 except ModuleNotFoundError as _torch_error:
     VAMPNet = _torch_guard("geom2vec.models.downstream.vamp.VAMPNet", _torch_error)
+    StopVAMPNet = _torch_guard("geom2vec.models.downstream.vamp.StopVAMPNet", _torch_error)
     VAMPWorkflow = _torch_guard("geom2vec.models.downstream.vamp.VAMPWorkflow", _torch_error)
+    StopVAMPWorkflow = _torch_guard("geom2vec.models.downstream.vamp.StopVAMPWorkflow", _torch_error)
     BiasedVAMPWorkflow = _torch_guard("geom2vec.models.downstream.vamp.BiasedVAMPWorkflow", _torch_error)
 else:
     VAMPNet = _VAMPNet
+    StopVAMPNet = _StopVAMPNet
     VAMPWorkflow = _VAMPWorkflow
+    StopVAMPWorkflow = _StopVAMPWorkflow
     BiasedVAMPWorkflow = _BiasedVAMPWorkflow
 
-__all__ = ["VAMPNet", "VAMPWorkflow", "BiasedVAMPWorkflow"]
+__all__ = ["VAMPNet", "StopVAMPNet", "VAMPWorkflow", "StopVAMPWorkflow", "BiasedVAMPWorkflow"]

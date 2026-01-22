@@ -135,16 +135,19 @@ class EquivariantSelfAttentionTriton(nn.Module):
         if vector_mixing == 'concat':
             self.vec_merge_2 = nn.Linear(hidden_channels * 2, hidden_channels, bias=False)
 
-    def forward(self, x, mask=None):
+    def forward(self, x, mask=None, attn_bias=None):
         """
         Args:
             x: Tensor of shape (B, N, 4, hidden_channels)
             mask: Optional boolean tensor of shape (B, N) where True indicates valid positions.
                   NOTE: Only used for final output masking, not during attention.
+            attn_bias: Optional attention bias tensor (unsupported in Triton kernel).
         Returns:
             x_final: Tensor of shape (B, N, 4, hidden_channels)
             attn_weights: None (Triton kernel does not return attention weights)
         """
+        if attn_bias is not None:
+            raise NotImplementedError("attn_bias is not supported by EquivariantSelfAttentionTriton.")
         B, N, _, H = x.shape
         assert H == self.hidden_channels
         assert self.window_size is None, "Triton kernel only supports full attention"
@@ -219,4 +222,3 @@ class EquivariantSelfAttentionTriton(nn.Module):
 
         # Triton kernel doesn't return attention weights
         return x_final, None
-
