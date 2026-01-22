@@ -195,10 +195,11 @@ summary = infer_mdanalysis_folder(
 )
 ```
 
-#### Optional: implicit solvent/lipid environment features (mean-field)
+#### Experimental: implicit solvent/lipid environment features (mean-field)
 
 When working with trajectories that include water and/or membrane lipids, you can compute **implicit**
-environment descriptors (no explicit solvent nodes) and save them alongside the embeddings.
+environment descriptors (no explicit solvent nodes) and save them alongside the embeddings as node features.
+Invariant features include solvent density, and the corresponding equivariant features include the density gradients.
 
 ```python
 from geom2vec.data import EnvironmentConfig, infer_mdanalysis_folder
@@ -386,8 +387,6 @@ See the `examples/` folder for complete tutorials:
 - `2_vamp_workflow.ipynb`: VAMPNet training workflow
 - `3_vamp_spib_workflow.ipynb`: Combined VAMPNet + SPIB pipeline
 - `4_biased_vamp_workflow.ipynb`: Biased VAMP for reweighted dynamics
-- `5_vqmsm_hmm_workflow.ipynb`: VQ-MSM + HMM workflow
-- `6_stopvamp_workflow.ipynb`: StopVAMPNet workflow with stopping-time boundaries
 
 ## Development and contact
 
